@@ -1,0 +1,28 @@
+[package]
+name = "onetool"
+version = "0.1.0"
+description = "JSON and XML formatter/minifier desktop utility"
+authors = ["OneTool"]
+edition = "2021"
+
+[lib]
+name = "onetool_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+ecb = { version = "0.1", features = ["alloc"] }
+ctr = "0.9"
+ofb = "0.6"
+cfb-mode = "0.8"
+base64 = "0.22"
+hex = "0.4"
+libsm = "0.6"
