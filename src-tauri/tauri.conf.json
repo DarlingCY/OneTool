@@ -23,6 +23,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "icon": [
+      "icons/icon.ico"
+    ],
     "createUpdaterArtifacts": true
   },
   "plugins": {
