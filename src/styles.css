@@ -393,7 +393,7 @@ button, textarea, pre, input, select { font: inherit; }
 
 .image-form {
   display: grid;
-  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  grid-template-columns: minmax(260px, 1fr) 2fr;
   gap: 12px;
   padding: 16px;
 }
@@ -421,7 +421,6 @@ button, textarea, pre, input, select { font: inherit; }
 }
 
 .file-picker {
-  grid-column: span 2;
   justify-content: center;
   min-height: 72px;
   border: 1px dashed var(--border-color);
@@ -434,6 +433,18 @@ button, textarea, pre, input, select { font: inherit; }
 
 .file-picker input {
   display: none;
+}
+
+.lossless-note {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  padding: 14px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .image-status {

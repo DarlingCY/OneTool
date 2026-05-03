@@ -81,13 +81,6 @@ interface Sm4Options {
   outputFormat: string;
 }
 
-interface ImageCompressOptions {
-  quality: number;
-  maxWidth?: number;
-  maxHeight?: number;
-  outputFormat: string;
-}
-
 interface ImageCompressResult {
   data: number[];
   extension: string;
@@ -122,8 +115,8 @@ async function generateSm2Keypair(outputFormat: string) {
   return invoke<[string, string]>("generate_sm2_keypair", { outputFormat, compressed: false });
 }
 
-async function compressImage(input: number[], options: ImageCompressOptions) {
-  return invoke<ImageCompressResult>("compress_image", { input, options });
+async function compressImage(input: number[]) {
+  return invoke<ImageCompressResult>("compress_image", { input });
 }
 
 function isAesToolKind(value: ToolKind): value is AesToolKind {
@@ -260,10 +253,6 @@ function App() {
   const [checkingUpdate, setCheckingUpdate] = React.useState(false);
   const [selectedImageName, setSelectedImageName] = React.useState("");
   const [selectedImageBytes, setSelectedImageBytes] = React.useState<number[]>([]);
-  const [imageQuality, setImageQuality] = React.useState(80);
-  const [imageMaxWidth, setImageMaxWidth] = React.useState("");
-  const [imageMaxHeight, setImageMaxHeight] = React.useState("");
-  const [imageOutputFormat, setImageOutputFormat] = React.useState("jpeg");
   const [imageResult, setImageResult] = React.useState<ImageCompressResult | null>(null);
   const [imageStatus, setImageStatus] = React.useState("");
   const [compressingImage, setCompressingImage] = React.useState(false);
@@ -419,16 +408,11 @@ function App() {
     setCompressingImage(true);
     setImageStatus("正在压缩...");
     try {
-      const result = await compressImage(selectedImageBytes, {
-        quality: imageQuality,
-        maxWidth: imageMaxWidth ? Number(imageMaxWidth) : undefined,
-        maxHeight: imageMaxHeight ? Number(imageMaxHeight) : undefined,
-        outputFormat: imageOutputFormat,
-      });
+      const result = await compressImage(selectedImageBytes);
       setImageResult(result);
       const saved = result.originalSize - result.compressedSize;
       const percent = result.originalSize > 0 ? ((saved / result.originalSize) * 100).toFixed(1) : "0.0";
-      setImageStatus(`压缩完成：${formatBytes(result.originalSize)} → ${formatBytes(result.compressedSize)}，减少 ${percent}%`);
+      setImageStatus(`无损压缩完成：${formatBytes(result.originalSize)} → ${formatBytes(result.compressedSize)}，减少 ${percent}%`);
     } catch (err) {
       setImageResult(null);
       setImageStatus(typeof err === "string" ? err : err instanceof Error ? err.message : "图片压缩失败");
@@ -525,13 +509,12 @@ function App() {
               </div>
               <div className="image-form">
                 <label className="file-picker">
-                  <input type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif" onChange={selectImage} />
+                  <input type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif,image/bmp,image/tiff" onChange={selectImage} />
                   <span>{selectedImageName || "选择图片文件"}</span>
                 </label>
-                <label>输出格式<select value={imageOutputFormat} onChange={(event) => setImageOutputFormat(event.target.value)}><option value="jpeg">JPEG</option><option value="png">PNG</option></select></label>
-                <label>质量 {imageQuality}<input type="range" min="1" max="100" value={imageQuality} onChange={(event) => setImageQuality(Number(event.target.value))} /></label>
-                <label>最大宽度<input value={imageMaxWidth} onChange={(event) => setImageMaxWidth(event.target.value.replace(/\D/g, ""))} placeholder="不填则保持" /></label>
-                <label>最大高度<input value={imageMaxHeight} onChange={(event) => setImageMaxHeight(event.target.value.replace(/\D/g, ""))} placeholder="不填则保持" /></label>
+                <div className="lossless-note">
+                  保持原格式、原尺寸和原画质。PNG 会尝试无损重编码减小体积；无法安全无损优化的格式会保持原文件不变。
+                </div>
               </div>
               <div className="image-status">{imageStatus || "支持 JPEG、PNG、WebP、BMP、GIF 输入；输出 JPEG 或 PNG。"}</div>
               {imageResult && (
