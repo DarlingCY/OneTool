@@ -5,6 +5,8 @@
   "windows": ["main"],
   "permissions": [
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "dialog:default",
+    "fs:default"
   ]
 }

@@ -237,8 +237,13 @@ button, textarea, pre, input, select { font: inherit; }
   transition: background-color 0.2s;
 }
 
-.btn-run:hover {
+.btn-run:hover:not(:disabled) {
   background-color: var(--accent-hover);
+}
+
+.btn-run:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-run.secondary {
@@ -367,6 +372,104 @@ button, textarea, pre, input, select { font: inherit; }
 .editor-textarea::placeholder {
   color: var(--text-muted);
   opacity: 0.5;
+}
+
+.image-workspace {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  background-color: var(--bg-panel);
+}
+
+.image-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.image-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 12px;
+  padding: 16px;
+}
+
+.image-form label,
+.file-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.image-form input,
+.image-form select {
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-panel);
+  color: var(--text-main);
+  padding: 0 8px;
+  outline: none;
+  font-size: 12px;
+}
+
+.file-picker {
+  grid-column: span 2;
+  justify-content: center;
+  min-height: 72px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-main);
+  padding: 14px;
+  cursor: pointer;
+}
+
+.file-picker input {
+  display: none;
+}
+
+.image-status {
+  padding: 0 16px 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.image-result {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+
+.image-result div {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  padding: 14px;
+}
+
+.image-result strong,
+.image-result span {
+  display: block;
+}
+
+.image-result strong {
+  font-size: 18px;
+  margin-bottom: 6px;
+}
+
+.image-result span {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .token.key { color: var(--code-key); }

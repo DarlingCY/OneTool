@@ -5,12 +5,15 @@ use cbc::{Decryptor as CbcDecryptor, Encryptor as CbcEncryptor};
 use cfb_mode::{Decryptor as CfbDecryptor, Encryptor as CfbEncryptor};
 use ctr::Ctr128BE;
 use ecb::{Decryptor as EcbDecryptor, Encryptor as EcbEncryptor};
+use image::codecs::jpeg::JpegEncoder;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{GenericImageView, ImageEncoder};
 use libsm::sm2::encrypt::{DecryptCtx, EncryptCtx};
 use libsm::sm2::signature::SigCtx;
 use libsm::sm3::hash::Sm3Hash;
 use libsm::sm4::cipher_mode::{CipherMode, Sm4CipherMode};
 use ofb::Ofb;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[tauri::command]
@@ -22,6 +25,90 @@ fn process_text(operation: &str, input: &str) -> Result<String, String> {
         "xml-minify" => minify_xml(input),
         _ => Err("不支持的操作".to_string()),
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageCompressOptions {
+    quality: u8,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+    output_format: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageCompressResult {
+    data: Vec<u8>,
+    extension: String,
+    mime: String,
+    original_size: usize,
+    compressed_size: usize,
+    width: u32,
+    height: u32,
+}
+
+#[tauri::command]
+fn compress_image(input: Vec<u8>, options: ImageCompressOptions) -> Result<ImageCompressResult, String> {
+    if input.is_empty() {
+        return Err("请选择图片文件".to_string());
+    }
+
+    let image = image::load_from_memory(&input).map_err(|err| format!("图片读取失败：{err}"))?;
+    let image = resize_image_if_needed(image, options.max_width, options.max_height);
+    let (width, height) = image.dimensions();
+    let quality = options.quality.clamp(1, 100);
+    let format = options.output_format.to_ascii_lowercase();
+
+    let (data, extension, mime) = match format.as_str() {
+        "png" => {
+            let rgba = image.to_rgba8();
+            let mut output = Vec::new();
+            let compression = if quality >= 80 {
+                CompressionType::Fast
+            } else if quality >= 40 {
+                CompressionType::Default
+            } else {
+                CompressionType::Best
+            };
+            PngEncoder::new_with_quality(&mut output, compression, FilterType::Adaptive)
+                .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
+                .map_err(|err| format!("PNG 压缩失败：{err}"))?;
+            (output, "png".to_string(), "image/png".to_string())
+        }
+        "jpeg" | "jpg" => {
+            let rgb = image.to_rgb8();
+            let mut output = Vec::new();
+            JpegEncoder::new_with_quality(&mut output, quality)
+                .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+                .map_err(|err| format!("JPEG 压缩失败：{err}"))?;
+            (output, "jpg".to_string(), "image/jpeg".to_string())
+        }
+        _ => return Err("输出格式仅支持 JPEG 或 PNG".to_string()),
+    };
+
+    let compressed_size = data.len();
+    Ok(ImageCompressResult {
+        data,
+        extension,
+        mime,
+        original_size: input.len(),
+        compressed_size,
+        width,
+        height,
+    })
+}
+
+fn resize_image_if_needed(image: image::DynamicImage, max_width: Option<u32>, max_height: Option<u32>) -> image::DynamicImage {
+    let (width, height) = image.dimensions();
+    let max_width = max_width.filter(|value| *value > 0).unwrap_or(width);
+    let max_height = max_height.filter(|value| *value > 0).unwrap_or(height);
+
+    if width <= max_width && height <= max_height {
+        return image;
+    }
+
+    image.resize(max_width, max_height, image::imageops::FilterType::Lanczos3)
 }
 
 #[derive(Debug, Deserialize)]
@@ -554,7 +641,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![process_text, process_aes, process_sm2, process_sm3, process_sm4, generate_sm2_keypair])
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .invoke_handler(tauri::generate_handler![process_text, compress_image, process_aes, process_sm2, process_sm3, process_sm4, generate_sm2_keypair])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -682,6 +771,32 @@ mod tests {
         .unwrap();
 
         assert_eq!(decrypted, "hello sm4");
+    }
+
+    #[test]
+    fn compresses_png_to_jpeg() {
+        let rgba = image::RgbaImage::from_pixel(32, 32, image::Rgba([240, 80, 40, 255]));
+        let mut source = Vec::new();
+        PngEncoder::new(&mut source)
+            .write_image(&rgba, 32, 32, image::ExtendedColorType::Rgba8)
+            .unwrap();
+
+        let result = compress_image(
+            source,
+            ImageCompressOptions {
+                quality: 75,
+                max_width: Some(16),
+                max_height: Some(16),
+                output_format: "jpeg".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.extension, "jpg");
+        assert_eq!(result.mime, "image/jpeg");
+        assert_eq!(result.width, 16);
+        assert_eq!(result.height, 16);
+        assert!(!result.data.is_empty());
     }
 
     #[test]

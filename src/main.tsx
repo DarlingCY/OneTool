@@ -1,16 +1,19 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
-import { Check, Copy, Play, RefreshCw } from "lucide-react";
+import { Check, Copy, Image as ImageIcon, Play, RefreshCw, Save } from "lucide-react";
 import "./styles.css";
 
 type ContentToolKind = "json" | "xml";
 type TextOperationKind = "json-format" | "json-minify" | "xml-format" | "xml-minify";
 type AesToolKind = "aes";
 type SmToolKind = "sm2" | "sm3-hash" | "sm4";
-type ToolKind = ContentToolKind | AesToolKind | SmToolKind;
+type ImageToolKind = "image-compress";
+type ToolKind = ContentToolKind | AesToolKind | SmToolKind | ImageToolKind;
 type SyntaxKind = "json" | "xml" | "text";
 
 interface ToolDef {
@@ -39,6 +42,12 @@ const categories = [
       { id: "sm2", label: "SM2 加密/解密", description: "国密 SM2 公钥加密与私钥解密" },
       { id: "sm3-hash", label: "SM3 摘要", description: "国密 SM3 哈希摘要" },
       { id: "sm4", label: "SM4 加密/解密", description: "国密 SM4 CBC/CFB/CTR/OFB/GCM 加密与解密" },
+    ] as ToolDef[],
+  },
+  {
+    name: "图片",
+    tools: [
+      { id: "image-compress", label: "图片压缩", description: "压缩 JPEG/PNG 图片并保存" },
     ] as ToolDef[],
   },
 ];
@@ -72,6 +81,23 @@ interface Sm4Options {
   outputFormat: string;
 }
 
+interface ImageCompressOptions {
+  quality: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  outputFormat: string;
+}
+
+interface ImageCompressResult {
+  data: number[];
+  extension: string;
+  mime: string;
+  originalSize: number;
+  compressedSize: number;
+  width: number;
+  height: number;
+}
+
 async function processText(operation: TextOperationKind, input: string) {
   return invoke<string>("process_text", { operation, input });
 }
@@ -94,6 +120,10 @@ async function processSm4(input: string, options: Sm4Options) {
 
 async function generateSm2Keypair(outputFormat: string) {
   return invoke<[string, string]>("generate_sm2_keypair", { outputFormat, compressed: false });
+}
+
+async function compressImage(input: number[], options: ImageCompressOptions) {
+  return invoke<ImageCompressResult>("compress_image", { input, options });
 }
 
 function isAesToolKind(value: ToolKind): value is AesToolKind {
@@ -166,6 +196,12 @@ function detectOutputSyntax(value: string): SyntaxKind {
   return "text";
 }
 
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(2)} MB`;
+}
+
 interface CodeEditorProps {
   label: string;
   value: string;
@@ -222,6 +258,15 @@ function App() {
   const [copied, setCopied] = React.useState(false);
   const [updateStatus, setUpdateStatus] = React.useState("");
   const [checkingUpdate, setCheckingUpdate] = React.useState(false);
+  const [selectedImageName, setSelectedImageName] = React.useState("");
+  const [selectedImageBytes, setSelectedImageBytes] = React.useState<number[]>([]);
+  const [imageQuality, setImageQuality] = React.useState(80);
+  const [imageMaxWidth, setImageMaxWidth] = React.useState("");
+  const [imageMaxHeight, setImageMaxHeight] = React.useState("");
+  const [imageOutputFormat, setImageOutputFormat] = React.useState("jpeg");
+  const [imageResult, setImageResult] = React.useState<ImageCompressResult | null>(null);
+  const [imageStatus, setImageStatus] = React.useState("");
+  const [compressingImage, setCompressingImage] = React.useState(false);
   const [aesMode, setAesMode] = React.useState("CBC");
   const [aesPadding, setAesPadding] = React.useState("pkcs7padding");
   const [aesKey, setAesKey] = React.useState("");
@@ -314,6 +359,7 @@ function App() {
   const isSmTool = isSmToolKind(tool);
   const isSm2Tool = tool === "sm2";
   const isSm4Tool = tool === "sm4";
+  const isImageTool = tool === "image-compress";
 
   const generateKeys = async () => {
     setError("");
@@ -351,6 +397,58 @@ function App() {
     } finally {
       setCheckingUpdate(false);
     }
+  };
+
+  const selectImage = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    setSelectedImageName(file.name);
+    setSelectedImageBytes(bytes);
+    setImageResult(null);
+    setImageStatus(`已选择 ${file.name}（${formatBytes(file.size)}）`);
+  };
+
+  const runImageCompress = async () => {
+    if (!selectedImageBytes.length) {
+      setImageStatus("请先选择图片");
+      return;
+    }
+
+    setCompressingImage(true);
+    setImageStatus("正在压缩...");
+    try {
+      const result = await compressImage(selectedImageBytes, {
+        quality: imageQuality,
+        maxWidth: imageMaxWidth ? Number(imageMaxWidth) : undefined,
+        maxHeight: imageMaxHeight ? Number(imageMaxHeight) : undefined,
+        outputFormat: imageOutputFormat,
+      });
+      setImageResult(result);
+      const saved = result.originalSize - result.compressedSize;
+      const percent = result.originalSize > 0 ? ((saved / result.originalSize) * 100).toFixed(1) : "0.0";
+      setImageStatus(`压缩完成：${formatBytes(result.originalSize)} → ${formatBytes(result.compressedSize)}，减少 ${percent}%`);
+    } catch (err) {
+      setImageResult(null);
+      setImageStatus(typeof err === "string" ? err : err instanceof Error ? err.message : "图片压缩失败");
+    } finally {
+      setCompressingImage(false);
+    }
+  };
+
+  const saveCompressedImage = async () => {
+    if (!imageResult) return;
+
+    const baseName = selectedImageName.replace(/\.[^.]+$/, "") || "image";
+    const path = await save({
+      defaultPath: `${baseName}-compressed.${imageResult.extension}`,
+      filters: [{ name: imageResult.extension.toUpperCase(), extensions: [imageResult.extension] }],
+    });
+    if (!path) return;
+
+    await writeFile(path, new Uint8Array(imageResult.data));
+    setImageStatus(`已保存：${path}`);
   };
 
   return (
@@ -411,67 +509,103 @@ function App() {
             <label>输出格式<select value={smOutputFormat} onChange={(e) => setSmOutputFormat(e.target.value)}><option value="hex">hex</option><option value="base64">base64</option><option value="string">string</option></select></label>
           </section>
         )}
-        <div className="workspace">
-          <CodeEditor
-            label="输入"
-            value={input}
-            syntax={activeSyntax}
-            placeholder="在此粘贴您的内容..."
-            onChange={setInput}
-            actions={
-              isContentTool ? (
+        {isImageTool ? (
+          <section className="image-workspace">
+            <div className="image-card">
+              <div className="editor-header output-header">
+                <span>图片压缩</span>
                 <div className="button-group">
-                  <button className="btn-run" onClick={() => run(`${tool}-format` as TextOperationKind)}>
-                    <Play size={14} /> 格式化
+                  <button className="btn-run" onClick={runImageCompress} disabled={compressingImage || !selectedImageBytes.length}>
+                    <ImageIcon size={14} /> {compressingImage ? "压缩中" : "压缩"}
                   </button>
-                  <button className="btn-run secondary" onClick={() => run(`${tool}-minify` as TextOperationKind)}>
-                    压缩
+                  <button className="btn-run secondary" onClick={saveCompressedImage} disabled={!imageResult}>
+                    <Save size={14} /> 保存
                   </button>
                 </div>
-              ) : (
-                <div className="button-group">
-                  {(isAesTool || isSm2Tool || isSm4Tool) ? (
-                    <>
-                      <button className="btn-run" onClick={() => {
-                        void run(undefined, "encrypt");
-                      }}>
-                        <Play size={14} /> 加密
-                      </button>
-                      <button className="btn-run secondary" onClick={() => {
-                        void run(undefined, "decrypt");
-                      }}>
-                        解密
-                      </button>
-                    </>
-                  ) : (
-                    <button className="btn-run" onClick={() => run()}>
-                      <Play size={14} /> 执行
+              </div>
+              <div className="image-form">
+                <label className="file-picker">
+                  <input type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif" onChange={selectImage} />
+                  <span>{selectedImageName || "选择图片文件"}</span>
+                </label>
+                <label>输出格式<select value={imageOutputFormat} onChange={(event) => setImageOutputFormat(event.target.value)}><option value="jpeg">JPEG</option><option value="png">PNG</option></select></label>
+                <label>质量 {imageQuality}<input type="range" min="1" max="100" value={imageQuality} onChange={(event) => setImageQuality(Number(event.target.value))} /></label>
+                <label>最大宽度<input value={imageMaxWidth} onChange={(event) => setImageMaxWidth(event.target.value.replace(/\D/g, ""))} placeholder="不填则保持" /></label>
+                <label>最大高度<input value={imageMaxHeight} onChange={(event) => setImageMaxHeight(event.target.value.replace(/\D/g, ""))} placeholder="不填则保持" /></label>
+              </div>
+              <div className="image-status">{imageStatus || "支持 JPEG、PNG、WebP、BMP、GIF 输入；输出 JPEG 或 PNG。"}</div>
+              {imageResult && (
+                <div className="image-result">
+                  <div><strong>{formatBytes(imageResult.originalSize)}</strong><span>原始大小</span></div>
+                  <div><strong>{formatBytes(imageResult.compressedSize)}</strong><span>压缩后</span></div>
+                  <div><strong>{imageResult.width} × {imageResult.height}</strong><span>输出尺寸</span></div>
+                </div>
+              )}
+            </div>
+          </section>
+        ) : (
+          <div className="workspace">
+            <CodeEditor
+              label="输入"
+              value={input}
+              syntax={activeSyntax}
+              placeholder="在此粘贴您的内容..."
+              onChange={setInput}
+              actions={
+                isContentTool ? (
+                  <div className="button-group">
+                    <button className="btn-run" onClick={() => run(`${tool}-format` as TextOperationKind)}>
+                      <Play size={14} /> 格式化
                     </button>
-                  )}
-                </div>
-              )
-            }
-          />
+                    <button className="btn-run secondary" onClick={() => run(`${tool}-minify` as TextOperationKind)}>
+                      压缩
+                    </button>
+                  </div>
+                ) : (
+                  <div className="button-group">
+                    {(isAesTool || isSm2Tool || isSm4Tool) ? (
+                      <>
+                        <button className="btn-run" onClick={() => {
+                          void run(undefined, "encrypt");
+                        }}>
+                          <Play size={14} /> 加密
+                        </button>
+                        <button className="btn-run secondary" onClick={() => {
+                          void run(undefined, "decrypt");
+                        }}>
+                          解密
+                        </button>
+                      </>
+                    ) : (
+                      <button className="btn-run" onClick={() => run()}>
+                        <Play size={14} /> 执行
+                      </button>
+                    )}
+                  </div>
+                )
+              }
+            />
 
-          <CodeEditor
-            label="输出"
-            value={error || output}
-            syntax={outputSyntax}
-            readOnly
-            error={Boolean(error)}
-            placeholder="处理结果将显示在这里..."
-            actions={
-              <button
-                className="btn-copy"
-                onClick={copy}
-                disabled={!output || Boolean(error)}
-              >
-                {copied ? <Check size={14} /> : <Copy size={14} />}
-                {copied ? "已复制" : "复制结果"}
-              </button>
-            }
-          />
-        </div>
+            <CodeEditor
+              label="输出"
+              value={error || output}
+              syntax={outputSyntax}
+              readOnly
+              error={Boolean(error)}
+              placeholder="处理结果将显示在这里..."
+              actions={
+                <button
+                  className="btn-copy"
+                  onClick={copy}
+                  disabled={!output || Boolean(error)}
+                >
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
+                  {copied ? "已复制" : "复制结果"}
+                </button>
+              }
+            />
+          </div>
+        )}
       </main>
     </div>
   );
