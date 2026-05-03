@@ -552,6 +552,8 @@ fn closing_xml_tag_for(token: &str) -> Option<String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![process_text, process_aes, process_sm2, process_sm3, process_sm4, generate_sm2_keypair])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

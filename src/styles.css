@@ -131,6 +131,42 @@ button, textarea, pre, input, select { font: inherit; }
   font-weight: 500;
 }
 
+.sidebar-footer {
+  border-top: 1px solid var(--border-color);
+  padding: 12px;
+}
+
+.update-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-main);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.update-button:hover:not(:disabled) {
+  background-color: rgba(150, 150, 150, 0.1);
+}
+
+.update-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.update-status {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .main-content {
   flex: 1;
   display: flex;

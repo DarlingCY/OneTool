@@ -22,6 +22,18 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFDRTdDNEJBQzYwODZDQTEKUldTaGJBakd1c1RuckthWlk2ZXpLcEJ5ZmtHcmtNK3BXV2JyRVUxYjdTS2VuRE1KZEk0YTlBemgK",
+      "endpoints": [
+        "https://github.com/DarlingCY/OneTool/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

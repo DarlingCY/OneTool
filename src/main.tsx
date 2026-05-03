@@ -1,7 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Copy, Play } from "lucide-react";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
+import { Check, Copy, Play, RefreshCw } from "lucide-react";
 import "./styles.css";
 
 type ContentToolKind = "json" | "xml";
@@ -218,6 +220,8 @@ function App() {
   const [output, setOutput] = React.useState("");
   const [error, setError] = React.useState("");
   const [copied, setCopied] = React.useState(false);
+  const [updateStatus, setUpdateStatus] = React.useState("");
+  const [checkingUpdate, setCheckingUpdate] = React.useState(false);
   const [aesMode, setAesMode] = React.useState("CBC");
   const [aesPadding, setAesPadding] = React.useState("pkcs7padding");
   const [aesKey, setAesKey] = React.useState("");
@@ -322,6 +326,33 @@ function App() {
     }
   };
 
+  const checkForUpdates = async () => {
+    setCheckingUpdate(true);
+    setUpdateStatus("正在检查更新...");
+    try {
+      const update = await check();
+      if (!update) {
+        setUpdateStatus("当前已是最新版本");
+        return;
+      }
+
+      const shouldInstall = window.confirm(`发现新版本 ${update.version}，是否下载并安装？`);
+      if (!shouldInstall) {
+        setUpdateStatus(`发现新版本 ${update.version}`);
+        return;
+      }
+
+      setUpdateStatus(`正在下载 ${update.version}...`);
+      await update.downloadAndInstall();
+      setUpdateStatus("更新已安装，正在重启...");
+      await relaunch();
+    } catch (err) {
+      setUpdateStatus(typeof err === "string" ? err : err instanceof Error ? err.message : "检查更新失败");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
   return (
     <div className="layout">
       <aside className="sidebar">
@@ -347,6 +378,12 @@ function App() {
             </div>
           ))}
         </nav>
+        <div className="sidebar-footer">
+          <button className="update-button" onClick={checkForUpdates} disabled={checkingUpdate}>
+            <RefreshCw size={14} /> 检查更新
+          </button>
+          {updateStatus && <div className="update-status">{updateStatus}</div>}
+        </div>
       </aside>
 
       <main className="main-content">
