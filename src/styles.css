@@ -18,6 +18,9 @@
   --code-tag: #0b63b6;
   --code-attr: #8a4b08;
   --code-bracket: #6e6e73;
+  --scrollbar-thumb: rgba(120, 120, 128, 0.36);
+  --scrollbar-thumb-hover: rgba(120, 120, 128, 0.56);
+  --scrollbar-track: transparent;
   --radius: 8px;
   
   color: var(--text-main);
@@ -46,12 +49,44 @@
     --code-tag: #89ddff;
     --code-attr: #f78c6c;
     --code-bracket: #a9b1bd;
+    --scrollbar-thumb: rgba(160, 160, 170, 0.38);
+    --scrollbar-thumb-hover: rgba(180, 180, 190, 0.62);
   }
 }
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 800px; height: 100vh; overflow: hidden; }
 button, textarea, pre, input, select { font: inherit; }
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 48px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-color: var(--scrollbar-thumb);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
 
 .layout {
   display: flex;
@@ -136,8 +171,35 @@ button, textarea, pre, input, select { font: inherit; }
   padding: 12px;
 }
 
+.app-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.repo-link {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-main);
+  text-decoration: none;
+}
+
+.repo-link:hover {
+  background-color: rgba(150, 150, 150, 0.1);
+  color: var(--accent);
+}
+
 .update-button {
-  width: 100%;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -277,6 +339,14 @@ button, textarea, pre, input, select { font: inherit; }
   padding-top: 12px;
 }
 
+.content-workspace {
+  overflow-x: auto;
+}
+
+.content-workspace .editor-container {
+  min-width: 240px;
+}
+
 .editor-container {
   display: flex;
   flex-direction: column;
@@ -324,11 +394,26 @@ button, textarea, pre, input, select { font: inherit; }
   cursor: not-allowed;
 }
 
+.btn-copy.icon-only {
+  padding: 4px;
+}
+
+.content-error {
+  max-width: 160px;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .code-surface {
   position: relative;
   flex: 1;
   min-height: 0;
   background: transparent;
+  scrollbar-gutter: stable;
 }
 
 .syntax-layer,
@@ -347,6 +432,20 @@ button, textarea, pre, input, select { font: inherit; }
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 13px;
   line-height: 1.5;
+}
+
+.syntax-layer::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.editor-textarea::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.editor-textarea::-webkit-scrollbar-thumb {
+  border-width: 4px;
 }
 
 .syntax-layer {
@@ -436,8 +535,9 @@ button, textarea, pre, input, select { font: inherit; }
 }
 
 .lossless-note {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+  gap: 10px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   background: var(--bg-panel);
@@ -445,6 +545,29 @@ button, textarea, pre, input, select { font: inherit; }
   padding: 14px;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.lossless-note span {
+  grid-column: 1 / -1;
+}
+
+.lossless-note label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.lossless-note input,
+.lossless-note select {
+  height: 30px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-main);
+  padding: 0 8px;
+  outline: none;
+  font-size: 12px;
 }
 
 .image-status {

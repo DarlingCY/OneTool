@@ -5,11 +5,11 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
-import { Check, Copy, Image as ImageIcon, Play, RefreshCw, Save } from "lucide-react";
+import { Check, Copy, Github, Image as ImageIcon, Play, Plus, RefreshCw, Save, X } from "lucide-react";
 import "./styles.css";
 
 type ContentToolKind = "json" | "xml";
-type TextOperationKind = "json-format" | "json-minify" | "xml-format" | "xml-minify";
+type TextOperationKind = "json-format" | "json-minify" | "json-sort-key" | "xml-format" | "xml-minify";
 type AesToolKind = "aes";
 type SmToolKind = "sm2" | "sm3-hash" | "sm4";
 type ImageToolKind = "image-compress";
@@ -81,6 +81,11 @@ interface Sm4Options {
   outputFormat: string;
 }
 
+interface ImageCompressOptions {
+  mode: "lossless" | "high";
+  quality?: number;
+}
+
 interface ImageCompressResult {
   data: number[];
   extension: string;
@@ -115,8 +120,8 @@ async function generateSm2Keypair(outputFormat: string) {
   return invoke<[string, string]>("generate_sm2_keypair", { outputFormat, compressed: false });
 }
 
-async function compressImage(input: number[]) {
-  return invoke<ImageCompressResult>("compress_image", { input });
+async function compressImage(input: number[], options: ImageCompressOptions) {
+  return invoke<ImageCompressResult>("compress_image", { input, options });
 }
 
 function isAesToolKind(value: ToolKind): value is AesToolKind {
@@ -243,16 +248,34 @@ function CodeEditor({ label, value, syntax, placeholder, readOnly, error, action
   );
 }
 
+interface ContentPane {
+  id: number;
+  value: string;
+  error: string;
+}
+
+const MAX_CONTENT_PANES = 4;
+const APP_VERSION = "0.0.3";
+const REPOSITORY_URL = "https://github.com/DarlingCY/OneTool";
+const createEmptyContentPane = (): ContentPane => ({ id: 1, value: "", error: "" });
+const createInitialContentPaneState = (): Record<ContentToolKind, ContentPane[]> => ({
+  json: [createEmptyContentPane()],
+  xml: [createEmptyContentPane()],
+});
+
 function App() {
   const [tool, setTool] = React.useState<ToolKind>("json");
   const [input, setInput] = React.useState("");
   const [output, setOutput] = React.useState("");
   const [error, setError] = React.useState("");
+  const [contentPaneState, setContentPaneState] = React.useState<Record<ContentToolKind, ContentPane[]>>(createInitialContentPaneState);
   const [copied, setCopied] = React.useState(false);
   const [updateStatus, setUpdateStatus] = React.useState("");
   const [checkingUpdate, setCheckingUpdate] = React.useState(false);
   const [selectedImageName, setSelectedImageName] = React.useState("");
   const [selectedImageBytes, setSelectedImageBytes] = React.useState<number[]>([]);
+  const [imageMode, setImageMode] = React.useState<"lossless" | "high">("lossless");
+  const [imageQuality, setImageQuality] = React.useState(80);
   const [imageResult, setImageResult] = React.useState<ImageCompressResult | null>(null);
   const [imageStatus, setImageStatus] = React.useState("");
   const [compressingImage, setCompressingImage] = React.useState(false);
@@ -341,6 +364,56 @@ function App() {
     window.setTimeout(() => setCopied(false), 1400);
   };
 
+  const updateContentPane = (id: number, value: string) => {
+    if (!isContentToolKind(tool)) return;
+    setContentPaneState((state) => ({
+      ...state,
+      [tool]: state[tool].map((pane) => (pane.id === id ? { ...pane, value, error: "" } : pane)),
+    }));
+  };
+
+  const addContentPane = () => {
+    if (!isContentToolKind(tool)) return;
+    setContentPaneState((state) => {
+      const panes = state[tool];
+      if (panes.length >= MAX_CONTENT_PANES) return state;
+      const nextId = Math.max(0, ...panes.map((pane) => pane.id)) + 1;
+      return {
+        ...state,
+        [tool]: [...panes, { id: nextId, value: "", error: "" }],
+      };
+    });
+  };
+
+  const removeContentPane = (id: number) => {
+    if (!isContentToolKind(tool)) return;
+    setContentPaneState((state) => {
+      const panes = state[tool];
+      return {
+        ...state,
+        [tool]: panes.length <= 1 ? panes : panes.filter((pane) => pane.id !== id),
+      };
+    });
+  };
+
+  const runContentPane = async (id: number, operation: TextOperationKind) => {
+    if (!isContentToolKind(tool)) return;
+    const activeTool = tool;
+    const contentPanes = contentPaneState[activeTool];
+    const pane = contentPanes.find((item) => item.id === id);
+    if (!pane) return;
+
+    try {
+      const result = await processText(operation, pane.value);
+      setContentPaneState((state) => ({
+        ...state,
+        [activeTool]: state[activeTool].map((item) => (item.id === id ? { ...item, value: result, error: "" } : item)),
+      }));
+    } catch {
+      // 输入格式不正确时保持原内容不变，不显示错误状态。
+    }
+  };
+
   const activeSyntax: SyntaxKind = tool === "json" ? "json" : tool === "xml" ? "xml" : "text";
   const outputSyntax: SyntaxKind = error ? "text" : detectOutputSyntax(output);
   const isContentTool = isContentToolKind(tool);
@@ -349,6 +422,7 @@ function App() {
   const isSm2Tool = tool === "sm2";
   const isSm4Tool = tool === "sm4";
   const isImageTool = tool === "image-compress";
+  const activeContentPanes = isContentTool ? contentPaneState[tool] : [];
 
   const generateKeys = async () => {
     setError("");
@@ -408,7 +482,10 @@ function App() {
     setCompressingImage(true);
     setImageStatus("正在压缩...");
     try {
-      const result = await compressImage(selectedImageBytes);
+      const result = await compressImage(selectedImageBytes, {
+        mode: imageMode,
+        quality: imageMode === "high" ? imageQuality : undefined,
+      });
       setImageResult(result);
       const saved = result.originalSize - result.compressedSize;
       const percent = result.originalSize > 0 ? ((saved / result.originalSize) * 100).toFixed(1) : "0.0";
@@ -461,9 +538,15 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <button className="update-button" onClick={checkForUpdates} disabled={checkingUpdate}>
-            <RefreshCw size={14} /> 检查更新
-          </button>
+          <div className="app-meta">
+            <span>v{APP_VERSION}</span>
+            <a className="repo-link" href={REPOSITORY_URL} target="_blank" rel="noreferrer" title="GitHub 仓库" aria-label="GitHub 仓库">
+              <Github size={15} />
+            </a>
+            <button className="update-button" onClick={checkForUpdates} disabled={checkingUpdate}>
+              <RefreshCw size={14} /> 检查更新
+            </button>
+          </div>
           {updateStatus && <div className="update-status">{updateStatus}</div>}
         </div>
       </aside>
@@ -509,14 +592,16 @@ function App() {
               </div>
               <div className="image-form">
                 <label className="file-picker">
-                  <input type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif,image/bmp,image/tiff" onChange={selectImage} />
+                  <input type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif,image/tiff" onChange={selectImage} />
                   <span>{selectedImageName || "选择图片文件"}</span>
                 </label>
                 <div className="lossless-note">
-                  保持原格式、原尺寸和原画质。PNG 会尝试无损重编码减小体积；无法安全无损优化的格式会保持原文件不变。
+                  <label>压缩模式<select value={imageMode} onChange={(event) => setImageMode(event.target.value as "lossless" | "high")}><option value="lossless">无损压缩</option><option value="high">高压缩</option></select></label>
+                  {imageMode === "high" && <label>JPEG 质量 {imageQuality}<input type="range" min="1" max="100" value={imageQuality} onChange={(event) => setImageQuality(Number(event.target.value))} /></label>}
+                  <span>{imageMode === "lossless" ? "保持原格式、原尺寸和原画质；PNG 会尝试无损重编码，其它格式无法安全优化时保持原文件。" : "保持原格式和原尺寸；JPEG 会按质量重新编码以获得更高压缩率。"}</span>
                 </div>
               </div>
-              <div className="image-status">{imageStatus || "支持 JPEG、PNG、WebP、BMP、GIF 输入；输出 JPEG 或 PNG。"}</div>
+              <div className="image-status">{imageStatus || "支持 JPEG、PNG、WebP、BMP、GIF、TIFF 输入；无损模式优先保持原文件，高压缩模式可显著压缩 JPEG。"}</div>
               {imageResult && (
                 <div className="image-result">
                   <div><strong>{formatBytes(imageResult.originalSize)}</strong><span>原始大小</span></div>
@@ -526,6 +611,46 @@ function App() {
               )}
             </div>
           </section>
+        ) : isContentTool ? (
+          <div className="workspace content-workspace" style={{ gridTemplateColumns: `repeat(${activeContentPanes.length}, minmax(0, 1fr))` }}>
+            {activeContentPanes.map((pane, index) => (
+              <CodeEditor
+                key={pane.id}
+                label={`${tool.toUpperCase()} ${index + 1}`}
+                value={pane.value}
+                syntax={activeSyntax}
+                error={Boolean(pane.error)}
+                placeholder="在此粘贴您的内容..."
+                onChange={(value) => updateContentPane(pane.id, value)}
+                actions={
+                  <div className="button-group">
+                    {pane.error && <span className="content-error" title={pane.error}>{pane.error}</span>}
+                    <button className="btn-run" onClick={() => runContentPane(pane.id, `${tool}-format` as TextOperationKind)}>
+                      <Play size={14} /> 格式化
+                    </button>
+                    <button className="btn-run secondary" onClick={() => runContentPane(pane.id, `${tool}-minify` as TextOperationKind)}>
+                      压缩
+                    </button>
+                    {tool === "json" && (
+                      <button className="btn-run secondary" onClick={() => runContentPane(pane.id, "json-sort-key")}>
+                        SortKey
+                      </button>
+                    )}
+                    {activeContentPanes.length < MAX_CONTENT_PANES && index === activeContentPanes.length - 1 && (
+                      <button className="btn-copy icon-only" onClick={addContentPane} title="向右添加内容框" aria-label="向右添加内容框">
+                        <Plus size={14} />
+                      </button>
+                    )}
+                    {activeContentPanes.length > 1 && (
+                      <button className="btn-copy icon-only" onClick={() => removeContentPane(pane.id)} title="删除内容框" aria-label="删除内容框">
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                }
+              />
+            ))}
+          </div>
         ) : (
           <div className="workspace">
             <CodeEditor

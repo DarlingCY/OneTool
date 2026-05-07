@@ -5,6 +5,7 @@ use cbc::{Decryptor as CbcDecryptor, Encryptor as CbcEncryptor};
 use cfb_mode::{Decryptor as CfbDecryptor, Encryptor as CfbEncryptor};
 use ctr::Ctr128BE;
 use ecb::{Decryptor as EcbDecryptor, Encryptor as EcbEncryptor};
+use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{GenericImageView, ImageEncoder, ImageFormat};
 use libsm::sm2::encrypt::{DecryptCtx, EncryptCtx};
@@ -13,17 +14,25 @@ use libsm::sm3::hash::Sm3Hash;
 use libsm::sm4::cipher_mode::{CipherMode, Sm4CipherMode};
 use ofb::Ofb;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[tauri::command]
 fn process_text(operation: &str, input: &str) -> Result<String, String> {
     match operation {
         "json-format" => format_json(input),
         "json-minify" => minify_json(input),
+        "json-sort-key" => sort_key_json(input),
         "xml-format" => format_xml(input),
         "xml-minify" => minify_xml(input),
         _ => Err("不支持的操作".to_string()),
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageCompressOptions {
+    mode: String,
+    quality: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,7 +48,7 @@ struct ImageCompressResult {
 }
 
 #[tauri::command]
-fn compress_image(input: Vec<u8>) -> Result<ImageCompressResult, String> {
+fn compress_image(input: Vec<u8>, options: ImageCompressOptions) -> Result<ImageCompressResult, String> {
     if input.is_empty() {
         return Err("请选择图片文件".to_string());
     }
@@ -48,10 +57,15 @@ fn compress_image(input: Vec<u8>) -> Result<ImageCompressResult, String> {
     let image = image::load_from_memory(&input).map_err(|err| format!("图片读取失败：{err}"))?;
     let (width, height) = image.dimensions();
     let (extension, mime) = image_format_meta(format);
+    let mode = options.mode.to_ascii_lowercase();
+    let quality = options.quality.unwrap_or(80).clamp(1, 100);
 
-    let optimized = match format {
-        ImageFormat::Png => optimize_png_lossless(&image, width, height)?,
-        _ => input.clone(),
+    let optimized = match (mode.as_str(), format) {
+        ("lossless", ImageFormat::Png) => optimize_png_lossless(&image, width, height)?,
+        ("high", ImageFormat::Jpeg) => compress_jpeg_visual(&image, width, height, quality)?,
+        ("high", ImageFormat::Png) => optimize_png_lossless(&image, width, height)?,
+        ("lossless", _) | ("high", _) => input.clone(),
+        _ => return Err("图片压缩模式仅支持 lossless 或 high".to_string()),
     };
 
     let data = if optimized.len() < input.len() { optimized } else { input.clone() };
@@ -74,6 +88,15 @@ fn optimize_png_lossless(image: &image::DynamicImage, width: u32, height: u32) -
     PngEncoder::new_with_quality(&mut output, CompressionType::Best, FilterType::Adaptive)
         .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
         .map_err(|err| format!("PNG 无损压缩失败：{err}"))?;
+    Ok(output)
+}
+
+fn compress_jpeg_visual(image: &image::DynamicImage, width: u32, height: u32, quality: u8) -> Result<Vec<u8>, String> {
+    let rgb = image.to_rgb8();
+    let mut output = Vec::new();
+    JpegEncoder::new_with_quality(&mut output, quality)
+        .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+        .map_err(|err| format!("JPEG 高压缩失败：{err}"))?;
     Ok(output)
 }
 
@@ -257,6 +280,36 @@ fn format_json(input: &str) -> Result<String, String> {
 fn minify_json(input: &str) -> Result<String, String> {
     let value: Value = serde_json::from_str(input).map_err(|err| format!("JSON 解析失败：{err}"))?;
     serde_json::to_string(&value).map_err(|err| format!("JSON 压缩失败：{err}"))
+}
+
+fn sort_key_json(input: &str) -> Result<String, String> {
+    let mut value: Value = serde_json::from_str(input).map_err(|err| format!("JSON 解析失败：{err}"))?;
+    sort_json_value_keys(&mut value);
+    serde_json::to_string_pretty(&value).map_err(|err| format!("JSON SortKey 失败：{err}"))
+}
+
+fn sort_json_value_keys(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let mut sorted = Map::new();
+            let original = std::mem::take(map);
+            let mut entries: Vec<_> = original.into_iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+            for (key, mut child) in entries {
+                sort_json_value_keys(&mut child);
+                sorted.insert(key, child);
+            }
+
+            *map = sorted;
+        }
+        Value::Array(items) => {
+            for item in items {
+                sort_json_value_keys(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn decode_by_format(input: &str, format: &str) -> Result<Vec<u8>, String> {
@@ -760,7 +813,14 @@ mod tests {
             .write_image(&rgba, 32, 32, image::ExtendedColorType::Rgba8)
             .unwrap();
 
-        let result = compress_image(source).unwrap();
+        let result = compress_image(
+            source,
+            ImageCompressOptions {
+                mode: "lossless".to_string(),
+                quality: None,
+            },
+        )
+        .unwrap();
 
         assert_eq!(result.extension, "png");
         assert_eq!(result.mime, "image/png");
