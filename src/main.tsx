@@ -255,7 +255,7 @@ interface ContentPane {
 }
 
 const MAX_CONTENT_PANES = 4;
-const APP_VERSION = "0.0.3";
+const APP_VERSION = "0.0.4";
 const REPOSITORY_URL = "https://github.com/DarlingCY/OneTool";
 const createEmptyContentPane = (): ContentPane => ({ id: 1, value: "", error: "" });
 const createInitialContentPaneState = (): Record<ContentToolKind, ContentPane[]> => ({
