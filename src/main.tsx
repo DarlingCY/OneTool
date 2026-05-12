@@ -9,11 +9,13 @@ import { Check, Copy, Github, Image as ImageIcon, Play, Plus, RefreshCw, Save, X
 import "./styles.css";
 
 type ContentToolKind = "json" | "xml";
+type Base64ToolKind = "base64-text" | "base64-image" | "base64-audio";
+type MediaBase64ToolKind = "base64-image" | "base64-audio";
 type TextOperationKind = "json-format" | "json-minify" | "json-sort-key" | "xml-format" | "xml-minify";
 type AesToolKind = "aes";
 type SmToolKind = "sm2" | "sm3-hash" | "sm4";
 type ImageToolKind = "image-compress";
-type ToolKind = ContentToolKind | AesToolKind | SmToolKind | ImageToolKind;
+type ToolKind = ContentToolKind | Base64ToolKind | AesToolKind | SmToolKind | ImageToolKind;
 type SyntaxKind = "json" | "xml" | "text";
 
 interface ToolDef {
@@ -33,6 +35,14 @@ const categories = [
     name: "XML",
     tools: [
       { id: "xml", label: "XML 格式化/压缩", description: "XML 格式化与压缩" },
+    ] as ToolDef[],
+  },
+  {
+    name: "Base64",
+    tools: [
+      { id: "base64-text", label: "文本 ↔ Base64", description: "UTF-8 文本与 Base64 互转" },
+      { id: "base64-image", label: "图片 ↔ Base64", description: "图片文件与 Base64 互转" },
+      { id: "base64-audio", label: "音频 ↔ Base64", description: "音频文件与 Base64 互转" },
     ] as ToolDef[],
   },
   {
@@ -96,6 +106,20 @@ interface ImageCompressResult {
   height: number;
 }
 
+interface MediaToolConfig {
+  title: string;
+  pickerLabel: string;
+  accept: string;
+  defaultMime: string;
+  defaultExtension: string;
+  defaultFileName: string;
+  emptyPreviewText: string;
+  helpText: string;
+}
+
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+
 async function processText(operation: TextOperationKind, input: string) {
   return invoke<string>("process_text", { operation, input });
 }
@@ -124,12 +148,120 @@ async function compressImage(input: number[], options: ImageCompressOptions) {
   return invoke<ImageCompressResult>("compress_image", { input, options });
 }
 
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function extractBase64Payload(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error("请输入 Base64 内容");
+
+  const dataUrlMatch = trimmed.match(/^data:([^,]*?);base64,([\s\S]+)$/i);
+  if (dataUrlMatch) {
+    const mime = dataUrlMatch[1]?.split(";")[0]?.trim() || "application/octet-stream";
+    return {
+      mime,
+      payload: dataUrlMatch[2].replace(/\s+/g, ""),
+      hasDataUrlPrefix: true,
+    };
+  }
+
+  return {
+    mime: "",
+    payload: trimmed.replace(/\s+/g, ""),
+    hasDataUrlPrefix: false,
+  };
+}
+
+function base64ToBytes(value: string) {
+  const { payload } = extractBase64Payload(value);
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function encodeTextAsBase64(value: string) {
+  return bytesToBase64(utf8Encoder.encode(value));
+}
+
+function decodeBase64AsText(value: string) {
+  return utf8Decoder.decode(base64ToBytes(value));
+}
+
+function extensionFromName(name: string) {
+  const match = name.toLowerCase().match(/\.([a-z0-9]+)$/i);
+  return match?.[1] || "";
+}
+
+function extensionFromMime(mime: string, fallback: string) {
+  const normalized = mime.toLowerCase();
+  const mimeMap: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "image/bmp": "bmp",
+    "image/tiff": "tiff",
+    "image/x-icon": "ico",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/ogg": "ogg",
+    "audio/webm": "webm",
+    "audio/aac": "aac",
+    "audio/flac": "flac",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+  };
+  return mimeMap[normalized] || fallback;
+}
+
+function getMediaToolConfig(tool: MediaBase64ToolKind): MediaToolConfig {
+  if (tool === "base64-image") {
+    return {
+      title: "图片 ↔ Base64",
+      pickerLabel: "选择图片文件",
+      accept: "image/png,image/jpeg,image/webp,image/bmp,image/gif,image/tiff,image/x-icon",
+      defaultMime: "image/png",
+      defaultExtension: "png",
+      defaultFileName: "image-from-base64",
+      emptyPreviewText: "选择图片后可转为 Base64；粘贴 Base64 后可解码预览并保存。",
+      helpText: "支持原始 Base64 和 data:image/...;base64, 前缀格式。",
+    };
+  }
+
+  return {
+    title: "音频 ↔ Base64",
+    pickerLabel: "选择音频文件",
+    accept: "audio/*",
+    defaultMime: "audio/mpeg",
+    defaultExtension: "mp3",
+    defaultFileName: "audio-from-base64",
+    emptyPreviewText: "选择音频后可转为 Base64；粘贴 Base64 后可解码试听并保存。",
+    helpText: "支持原始 Base64 和 data:audio/...;base64, 前缀格式。",
+  };
+}
+
 function isAesToolKind(value: ToolKind): value is AesToolKind {
   return value === "aes";
 }
 
 function isContentToolKind(value: ToolKind): value is ContentToolKind {
   return value === "json" || value === "xml";
+}
+
+function isMediaBase64ToolKind(value: ToolKind): value is MediaBase64ToolKind {
+  return value === "base64-image" || value === "base64-audio";
 }
 
 function isSmToolKind(value: ToolKind): value is SmToolKind {
@@ -255,7 +387,7 @@ interface ContentPane {
 }
 
 const MAX_CONTENT_PANES = 4;
-const APP_VERSION = "0.0.4";
+const APP_VERSION = "0.0.5";
 const REPOSITORY_URL = "https://github.com/DarlingCY/OneTool";
 const createEmptyContentPane = (): ContentPane => ({ id: 1, value: "", error: "" });
 const createInitialContentPaneState = (): Record<ContentToolKind, ContentPane[]> => ({
@@ -279,6 +411,16 @@ function App() {
   const [imageResult, setImageResult] = React.useState<ImageCompressResult | null>(null);
   const [imageStatus, setImageStatus] = React.useState("");
   const [compressingImage, setCompressingImage] = React.useState(false);
+  const [selectedMediaName, setSelectedMediaName] = React.useState("");
+  const [selectedMediaBytes, setSelectedMediaBytes] = React.useState<number[]>([]);
+  const [selectedMediaMime, setSelectedMediaMime] = React.useState("");
+  const [mediaBase64, setMediaBase64] = React.useState("");
+  const [mediaStatus, setMediaStatus] = React.useState("");
+  const [mediaIncludeDataUrl, setMediaIncludeDataUrl] = React.useState(true);
+  const [decodedMediaBytes, setDecodedMediaBytes] = React.useState<number[]>([]);
+  const [decodedMediaMime, setDecodedMediaMime] = React.useState("");
+  const [decodedMediaExtension, setDecodedMediaExtension] = React.useState("");
+  const [mediaPreviewUrl, setMediaPreviewUrl] = React.useState("");
   const [aesMode, setAesMode] = React.useState("CBC");
   const [aesPadding, setAesPadding] = React.useState("pkcs7padding");
   const [aesKey, setAesKey] = React.useState("");
@@ -298,6 +440,14 @@ function App() {
   React.useEffect(() => {
     setOutput("");
     setError("");
+    setSelectedMediaName("");
+    setSelectedMediaBytes([]);
+    setSelectedMediaMime("");
+    setMediaBase64("");
+    setMediaStatus("");
+    setDecodedMediaBytes([]);
+    setDecodedMediaMime("");
+    setDecodedMediaExtension("");
   }, [tool]);
 
   React.useEffect(() => {
@@ -307,16 +457,37 @@ function App() {
     }
   }, [tool]);
 
-  const run = async (textOperation?: TextOperationKind, actionOverride?: "encrypt" | "decrypt") => {
+  React.useEffect(() => {
+    if (!isMediaBase64ToolKind(tool)) {
+      setMediaPreviewUrl("");
+      return;
+    }
+
+    const previewBytes = decodedMediaBytes.length ? decodedMediaBytes : selectedMediaBytes;
+    const previewMime = decodedMediaBytes.length ? decodedMediaMime : selectedMediaMime;
+
+    if (!previewBytes.length || !previewMime) {
+      setMediaPreviewUrl("");
+      return;
+    }
+
+    const url = URL.createObjectURL(new Blob([new Uint8Array(previewBytes)], { type: previewMime }));
+    setMediaPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [tool, decodedMediaBytes, decodedMediaMime, selectedMediaBytes, selectedMediaMime]);
+
+  const run = async (textOperation?: TextOperationKind, actionOverride?: "encrypt" | "decrypt" | "encode" | "decode") => {
     setError("");
     setCopied(false);
     try {
       let result: string;
       if (textOperation) {
         result = await processText(textOperation, input);
+      } else if (tool === "base64-text") {
+        result = (actionOverride ?? "encode") === "decode" ? decodeBase64AsText(input) : encodeTextAsBase64(input);
       } else if (isAesToolKind(tool)) {
         result = await processAes(input, {
-            action: actionOverride ?? "encrypt",
+            action: actionOverride === "decrypt" ? "decrypt" : "encrypt",
             mode: aesMode,
             padding: aesPadding,
             key: aesKey,
@@ -326,7 +497,7 @@ function App() {
           });
       } else if (tool === "sm2") {
         result = await processSm2(input, {
-          action: actionOverride ?? "encrypt",
+          action: actionOverride === "decrypt" ? "decrypt" : "encrypt",
           publicKey: sm2PublicKey,
           privateKey: sm2PrivateKey,
           keyFormat: sm2KeyFormat,
@@ -337,7 +508,7 @@ function App() {
         result = await processSm3(input, smInputFormat, smOutputFormat);
       } else if (tool === "sm4") {
         result = await processSm4(input, {
-          action: actionOverride ?? "encrypt",
+          action: actionOverride === "decrypt" ? "decrypt" : "encrypt",
           mode: sm4Mode,
           padding: sm4Padding,
           key: sm4Key,
@@ -357,9 +528,9 @@ function App() {
     }
   };
 
-  const copy = async () => {
-    if (!output) return;
-    await navigator.clipboard.writeText(output);
+  const copyText = async (value: string) => {
+    if (!value) return;
+    await navigator.clipboard.writeText(value);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   };
@@ -417,11 +588,16 @@ function App() {
   const activeSyntax: SyntaxKind = tool === "json" ? "json" : tool === "xml" ? "xml" : "text";
   const outputSyntax: SyntaxKind = error ? "text" : detectOutputSyntax(output);
   const isContentTool = isContentToolKind(tool);
+  const isBase64TextTool = tool === "base64-text";
+  const isMediaBase64Tool = isMediaBase64ToolKind(tool);
   const isAesTool = isAesToolKind(tool);
   const isSmTool = isSmToolKind(tool);
   const isSm2Tool = tool === "sm2";
   const isSm4Tool = tool === "sm4";
   const isImageTool = tool === "image-compress";
+  const mediaToolConfig = isMediaBase64Tool ? getMediaToolConfig(tool) : null;
+  const previewBytes = decodedMediaBytes.length ? decodedMediaBytes : selectedMediaBytes;
+  const previewMime = decodedMediaBytes.length ? decodedMediaMime : selectedMediaMime;
   const activeContentPanes = isContentTool ? contentPaneState[tool] : [];
 
   const generateKeys = async () => {
@@ -510,6 +686,79 @@ function App() {
 
     await writeFile(path, new Uint8Array(imageResult.data));
     setImageStatus(`已保存：${path}`);
+  };
+
+  const selectMediaFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !isMediaBase64ToolKind(tool)) return;
+
+    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    const mediaConfig = getMediaToolConfig(tool);
+    setSelectedMediaName(file.name);
+    setSelectedMediaBytes(bytes);
+    setSelectedMediaMime(file.type || mediaConfig.defaultMime);
+    setDecodedMediaBytes([]);
+    setDecodedMediaMime("");
+    setDecodedMediaExtension("");
+    setMediaStatus(`已选择 ${file.name}（${formatBytes(file.size)}）`);
+    event.target.value = "";
+  };
+
+  const encodeMediaFile = () => {
+    if (!isMediaBase64ToolKind(tool)) return;
+    if (!selectedMediaBytes.length) {
+      setMediaStatus("请先选择文件");
+      return;
+    }
+
+    const mediaConfig = getMediaToolConfig(tool);
+    const mime = selectedMediaMime || mediaConfig.defaultMime;
+    const rawBase64 = bytesToBase64(Uint8Array.from(selectedMediaBytes));
+    const result = mediaIncludeDataUrl ? `data:${mime};base64,${rawBase64}` : rawBase64;
+    setMediaBase64(result);
+    setMediaStatus(`已生成 Base64（${mediaIncludeDataUrl ? "包含 data: 前缀" : "原始 Base64"}）`);
+  };
+
+  const decodeMediaFile = () => {
+    if (!isMediaBase64ToolKind(tool)) return;
+    const mediaConfig = getMediaToolConfig(tool);
+
+    try {
+      const payload = extractBase64Payload(mediaBase64);
+      const mime = payload.mime || selectedMediaMime || mediaConfig.defaultMime;
+      const bytes = Array.from(base64ToBytes(mediaBase64));
+      const extension = extensionFromMime(mime, selectedMediaName ? extensionFromName(selectedMediaName) || mediaConfig.defaultExtension : mediaConfig.defaultExtension);
+
+      setDecodedMediaBytes(bytes);
+      setDecodedMediaMime(mime);
+      setDecodedMediaExtension(extension);
+      setMediaStatus(`Base64 解码完成：${formatBytes(bytes.length)} · ${payload.hasDataUrlPrefix ? mime : `${mime}（按当前工具推断）`}`);
+    } catch (err) {
+      setDecodedMediaBytes([]);
+      setDecodedMediaMime("");
+      setDecodedMediaExtension("");
+      setMediaStatus(typeof err === "string" ? err : err instanceof Error ? err.message : "Base64 解码失败");
+    }
+  };
+
+  const saveDecodedMedia = async () => {
+    if (!isMediaBase64ToolKind(tool)) return;
+    if (!decodedMediaBytes.length) {
+      setMediaStatus("请先将 Base64 解码为文件");
+      return;
+    }
+
+    const mediaConfig = getMediaToolConfig(tool);
+    const baseName = selectedMediaName.replace(/\.[^.]+$/, "") || mediaConfig.defaultFileName;
+    const extension = decodedMediaExtension || mediaConfig.defaultExtension;
+    const path = await save({
+      defaultPath: `${baseName}.${extension}`,
+      filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
+    });
+    if (!path) return;
+
+    await writeFile(path, new Uint8Array(decodedMediaBytes));
+    setMediaStatus(`已保存：${path}`);
   };
 
   return (
@@ -611,6 +860,81 @@ function App() {
               )}
             </div>
           </section>
+        ) : isMediaBase64Tool && mediaToolConfig ? (
+          <section className="workspace media-workspace">
+            <div className="image-card media-card">
+              <div className="editor-header output-header">
+                <span>{mediaToolConfig.title}</span>
+                <div className="button-group">
+                  <button className="btn-run" onClick={encodeMediaFile} disabled={!selectedMediaBytes.length}>
+                    <Play size={14} /> 编码
+                  </button>
+                  <button className="btn-run secondary" onClick={saveDecodedMedia} disabled={!decodedMediaBytes.length}>
+                    <Save size={14} /> 保存
+                  </button>
+                </div>
+              </div>
+              <div className="image-form">
+                <label className="file-picker">
+                  <input type="file" accept={mediaToolConfig.accept} onChange={selectMediaFile} />
+                  <span>{selectedMediaName || mediaToolConfig.pickerLabel}</span>
+                </label>
+                <div className="lossless-note">
+                  <label>
+                    输出内容
+                    <select value={mediaIncludeDataUrl ? "data-url" : "raw"} onChange={(event) => setMediaIncludeDataUrl(event.target.value === "data-url")}>
+                      <option value="data-url">Data URL</option>
+                      <option value="raw">原始 Base64</option>
+                    </select>
+                  </label>
+                  <span>{mediaToolConfig.helpText}</span>
+                </div>
+              </div>
+              <div className="media-preview">
+                {mediaPreviewUrl ? (
+                  tool === "base64-image" ? (
+                    <img src={mediaPreviewUrl} alt="preview" className="media-preview-image" />
+                  ) : (
+                    <audio className="media-preview-audio" controls src={mediaPreviewUrl} />
+                  )
+                ) : (
+                  <div className="media-preview-empty">{mediaToolConfig.emptyPreviewText}</div>
+                )}
+              </div>
+              {!!previewBytes.length && (
+                <div className="media-result">
+                  <div><strong>{formatBytes(previewBytes.length)}</strong><span>当前预览大小</span></div>
+                  <div><strong>{previewMime || mediaToolConfig.defaultMime}</strong><span>MIME</span></div>
+                </div>
+              )}
+              <div className="image-status">{mediaStatus || mediaToolConfig.helpText}</div>
+            </div>
+
+            <CodeEditor
+              label="Base64"
+              value={mediaBase64}
+              syntax="text"
+              placeholder="在此粘贴或查看 Base64 内容..."
+              onChange={setMediaBase64}
+              actions={
+                <div className="button-group">
+                  <button className="btn-run" onClick={decodeMediaFile} disabled={!mediaBase64.trim()}>
+                    <Play size={14} /> 解码
+                  </button>
+                  <button
+                    className="btn-copy"
+                    onClick={() => {
+                      void copyText(mediaBase64);
+                    }}
+                    disabled={!mediaBase64.trim()}
+                  >
+                    {copied ? <Check size={14} /> : <Copy size={14} />}
+                    {copied ? "已复制" : "复制 Base64"}
+                  </button>
+                </div>
+              }
+            />
+          </section>
         ) : isContentTool ? (
           <div className="workspace content-workspace" style={{ gridTemplateColumns: `repeat(${activeContentPanes.length}, minmax(0, 1fr))` }}>
             {activeContentPanes.map((pane, index) => (
@@ -671,17 +995,17 @@ function App() {
                   </div>
                 ) : (
                   <div className="button-group">
-                    {(isAesTool || isSm2Tool || isSm4Tool) ? (
+                    {(isAesTool || isSm2Tool || isSm4Tool || isBase64TextTool) ? (
                       <>
                         <button className="btn-run" onClick={() => {
-                          void run(undefined, "encrypt");
+                          void run(undefined, isBase64TextTool ? "encode" : "encrypt");
                         }}>
-                          <Play size={14} /> 加密
+                          <Play size={14} /> {isBase64TextTool ? "编码" : "加密"}
                         </button>
                         <button className="btn-run secondary" onClick={() => {
-                          void run(undefined, "decrypt");
+                          void run(undefined, isBase64TextTool ? "decode" : "decrypt");
                         }}>
-                          解密
+                          {isBase64TextTool ? "解码" : "解密"}
                         </button>
                       </>
                     ) : (
@@ -704,7 +1028,9 @@ function App() {
               actions={
                 <button
                   className="btn-copy"
-                  onClick={copy}
+                  onClick={() => {
+                    void copyText(output);
+                  }}
                   disabled={!output || Boolean(error)}
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}

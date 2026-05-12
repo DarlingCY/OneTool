@@ -606,6 +606,77 @@ button, textarea, pre, input, select { font: inherit; }
   font-size: 12px;
 }
 
+.media-workspace {
+  grid-template-columns: minmax(360px, 1.05fr) minmax(0, 1fr);
+}
+
+.media-card {
+  min-width: 0;
+}
+
+.media-preview {
+  flex: 1;
+  min-height: 220px;
+  margin: 0 16px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.media-preview-empty {
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+}
+
+.media-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+}
+
+.media-preview-audio {
+  width: min(100%, 420px);
+  margin: 0 16px;
+}
+
+.media-result {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+
+.media-result div {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  padding: 14px;
+}
+
+.media-result strong,
+.media-result span {
+  display: block;
+}
+
+.media-result strong {
+  font-size: 16px;
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
+.media-result span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .token.key { color: var(--code-key); }
 .token.string { color: var(--code-string); }
 .token.number { color: var(--code-number); }
