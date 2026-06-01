@@ -685,6 +685,10 @@ button, textarea, pre, input, select { font: inherit; }
 .token.attr { color: var(--code-attr); }
 .token.bracket { color: var(--code-bracket); }
 
+.syntax-layer span::before {
+  content: attr(data-text);
+}
+
 .has-error .syntax-layer {
   color: var(--danger);
 }

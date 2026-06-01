@@ -28,17 +28,11 @@ fn process_text(operation: &str, input: &str) -> Result<String, String> {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ImageCompressOptions {
-    mode: String,
-    quality: Option<u8>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ImageCompressResult {
-    data: Vec<u8>,
+    /// 压缩后图片字节的 Base64（标准编码），前端解码为 Uint8Array。
+    data: String,
     extension: String,
     mime: String,
     original_size: usize,
@@ -48,38 +42,69 @@ struct ImageCompressResult {
 }
 
 #[tauri::command]
-fn compress_image(input: Vec<u8>, options: ImageCompressOptions) -> Result<ImageCompressResult, String> {
-    if input.is_empty() {
-        return Err("请选择图片文件".to_string());
-    }
-
-    let format = image::guess_format(&input).map_err(|err| format!("图片格式识别失败：{err}"))?;
-    let image = image::load_from_memory(&input).map_err(|err| format!("图片读取失败：{err}"))?;
-    let (width, height) = image.dimensions();
-    let (extension, mime) = image_format_meta(format);
-    let mode = options.mode.to_ascii_lowercase();
-    let quality = options.quality.unwrap_or(80).clamp(1, 100);
-
-    let optimized = match (mode.as_str(), format) {
-        ("lossless", ImageFormat::Png) => optimize_png_lossless(&image, width, height)?,
-        ("high", ImageFormat::Jpeg) => compress_jpeg_visual(&image, width, height, quality)?,
-        ("high", ImageFormat::Png) => optimize_png_lossless(&image, width, height)?,
-        ("lossless", _) | ("high", _) => input.clone(),
-        _ => return Err("图片压缩模式仅支持 lossless 或 high".to_string()),
+fn compress_image(request: tauri::ipc::Request<'_>) -> Result<ImageCompressResult, String> {
+    let input: &[u8] = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.as_slice(),
+        _ => return Err("图片数据必须以二进制形式传入".to_string()),
     };
 
-    let data = if optimized.len() < input.len() { optimized } else { input.clone() };
-    let compressed_size = data.len();
+    let headers = request.headers();
+    let mode = headers
+        .get("x-mode")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("lossless");
+    let quality = headers
+        .get("x-quality")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u8>().ok());
+
+    let (data, extension, mime, original_size, compressed_size, width, height) =
+        compress_image_bytes(input, &mode, quality)?;
 
     Ok(ImageCompressResult {
-        data,
+        data: general_purpose::STANDARD.encode(&data),
         extension: extension.to_string(),
         mime: mime.to_string(),
-        original_size: input.len(),
+        original_size,
         compressed_size,
         width,
         height,
     })
+}
+
+#[allow(clippy::type_complexity)]
+fn compress_image_bytes(
+    input: &[u8],
+    mode: &str,
+    quality: Option<u8>,
+) -> Result<(Vec<u8>, &'static str, &'static str, usize, usize, u32, u32), String> {
+    if input.is_empty() {
+        return Err("请选择图片文件".to_string());
+    }
+
+    let format = image::guess_format(input).map_err(|err| format!("图片格式识别失败：{err}"))?;
+    let image = image::load_from_memory(input).map_err(|err| format!("图片读取失败：{err}"))?;
+    let (width, height) = image.dimensions();
+    let (extension, mime) = image_format_meta(format);
+    let mode = mode.to_ascii_lowercase();
+    let quality = quality.unwrap_or(80).clamp(1, 100);
+
+    let optimized = match (mode.as_str(), format) {
+        ("lossless", ImageFormat::Png) => Some(optimize_png_lossless(&image, width, height)?),
+        ("high", ImageFormat::Jpeg) => Some(compress_jpeg_visual(&image, width, height, quality)?),
+        ("high", ImageFormat::Png) => Some(optimize_png_lossless(&image, width, height)?),
+        ("lossless", _) | ("high", _) => None,
+        _ => return Err("图片压缩模式仅支持 lossless 或 high".to_string()),
+    };
+
+    let original_size = input.len();
+    let data = match optimized {
+        Some(bytes) if bytes.len() < original_size => bytes,
+        _ => input.to_vec(),
+    };
+    let compressed_size = data.len();
+
+    Ok((data, extension, mime, original_size, compressed_size, width, height))
 }
 
 fn optimize_png_lossless(image: &image::DynamicImage, width: u32, height: u32) -> Result<Vec<u8>, String> {
@@ -400,7 +425,10 @@ fn apply_sm4_padding(data: &[u8], padding: &str) -> Result<Vec<u8>, String> {
 fn remove_sm4_padding(data: &[u8], padding: &str) -> Result<Vec<u8>, String> {
     match padding.to_ascii_uppercase().as_str() {
         "NOPADDING" => Ok(data.to_vec()),
-        "ZEROPADDING" => Ok(data.iter().copied().rev().skip_while(|b| *b == 0).collect::<Vec<_>>().into_iter().rev().collect()),
+        "ZEROPADDING" => {
+            let end = data.iter().rposition(|&b| b != 0).map_or(0, |index| index + 1);
+            Ok(data[..end].to_vec())
+        }
         "PKCS7PADDING" | "ISO10126PADDING" => {
             let Some(&last) = data.last() else {
                 return Ok(Vec::new());
@@ -813,20 +841,14 @@ mod tests {
             .write_image(&rgba, 32, 32, image::ExtendedColorType::Rgba8)
             .unwrap();
 
-        let result = compress_image(
-            source,
-            ImageCompressOptions {
-                mode: "lossless".to_string(),
-                quality: None,
-            },
-        )
-        .unwrap();
+        let result = compress_image_bytes(&source, "lossless", None).unwrap();
 
-        assert_eq!(result.extension, "png");
-        assert_eq!(result.mime, "image/png");
-        assert_eq!(result.width, 32);
-        assert_eq!(result.height, 32);
-        assert!(!result.data.is_empty());
+        let (data, extension, mime, _original_size, _compressed_size, width, height) = result;
+        assert_eq!(extension, "png");
+        assert_eq!(mime, "image/png");
+        assert_eq!(width, 32);
+        assert_eq!(height, 32);
+        assert!(!data.is_empty());
     }
 
     #[test]

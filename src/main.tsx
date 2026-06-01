@@ -97,7 +97,7 @@ interface ImageCompressOptions {
 }
 
 interface ImageCompressResult {
-  data: number[];
+  data: string;
   extension: string;
   mime: string;
   originalSize: number;
@@ -144,16 +144,16 @@ async function generateSm2Keypair(outputFormat: string) {
   return invoke<[string, string]>("generate_sm2_keypair", { outputFormat, compressed: false });
 }
 
-async function compressImage(input: number[], options: ImageCompressOptions) {
-  return invoke<ImageCompressResult>("compress_image", { input, options });
+async function compressImage(input: Uint8Array, options: ImageCompressOptions) {
+  const headers: Record<string, string> = { "x-mode": options.mode };
+  if (options.quality !== undefined) headers["x-quality"] = String(options.quality);
+  return invoke<ImageCompressResult>("compress_image", input, { headers });
 }
 
 function bytesToBase64(bytes: Uint8Array) {
   let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]);
   }
   return btoa(binary);
 }
@@ -277,34 +277,76 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#039;");
 }
 
+function escapeAttribute(value: string) {
+  return escapeHtml(value).replace(/\r/g, "&#13;").replace(/\n/g, "&#10;");
+}
+
+function renderSyntaxSegment(value: string, className?: string) {
+  if (!value) return "";
+  const classAttr = className ? ` class="${className}"` : "";
+  return `<span${classAttr} data-text="${escapeAttribute(value)}"></span>`;
+}
+
 function highlightJson(value: string) {
-  return escapeHtml(value).replace(
-    /(&quot;(?:\\.|[^&])*?&quot;)(\s*:)?|\b(true|false|null)\b|-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/g,
-    (match, quoted: string | undefined, colon: string | undefined, literal: string | undefined) => {
-      if (quoted) {
-        const className = colon ? "token key" : "token string";
-        return `<span class="${className}">${quoted}</span>${colon ?? ""}`;
-      }
-      if (literal) return `<span class="token literal">${literal}</span>`;
-      return `<span class="token number">${match}</span>`;
-    },
-  );
+  const tokenPattern = /"(?:\\.|[^"\\])*"(\s*:)?|\b(true|false|null)\b|-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/g;
+  let result = "";
+  let lastIndex = 0;
+
+  value.replace(tokenPattern, (match, colon: string | undefined, literal: string | undefined, offset: number) => {
+    result += renderSyntaxSegment(value.slice(lastIndex, offset));
+
+    if (match.startsWith('"')) {
+      const token = colon ? match.slice(0, -colon.length) : match;
+      result += renderSyntaxSegment(token, colon ? "token key" : "token string");
+      result += renderSyntaxSegment(colon ?? "");
+    } else if (literal) {
+      result += renderSyntaxSegment(match, "token literal");
+    } else {
+      result += renderSyntaxSegment(match, "token number");
+    }
+
+    lastIndex = offset + match.length;
+    return match;
+  });
+
+  result += renderSyntaxSegment(value.slice(lastIndex));
+  return result;
 }
 
 function highlightXml(value: string) {
-  return escapeHtml(value).replace(
-    /(&lt;\/?)([\w:.-]+)|([\w:.-]+)(=)(&quot;.*?&quot;)|(&lt;![\s\S]*?&gt;|&lt;\?[\s\S]*?\?&gt;|\/?>)/g,
-    (match, open: string | undefined, tag: string | undefined, attr: string | undefined, equals: string | undefined, attrValue: string | undefined, metaOrClose: string | undefined) => {
-      if (open && tag) return `<span class="token bracket">${open}</span><span class="token tag">${tag}</span>`;
-      if (attr && equals && attrValue) return `<span class="token attr">${attr}</span>${equals}<span class="token string">${attrValue}</span>`;
-      if (metaOrClose) return `<span class="token bracket">${metaOrClose}</span>`;
+  const tokenPattern = /(<\/?)([\w:.-]+)|([\w:.-]+)(=)(".*?")|(<![\s\S]*?>|<\?[\s\S]*?\?>|\/?>)/g;
+  let result = "";
+  let lastIndex = 0;
+
+  value.replace(
+    tokenPattern,
+    (match, open: string | undefined, tag: string | undefined, attr: string | undefined, equals: string | undefined, attrValue: string | undefined, metaOrClose: string | undefined, offset: number) => {
+      result += renderSyntaxSegment(value.slice(lastIndex, offset));
+
+      if (open && tag) {
+        result += renderSyntaxSegment(open, "token bracket");
+        result += renderSyntaxSegment(tag, "token tag");
+      } else if (attr && equals && attrValue) {
+        result += renderSyntaxSegment(attr, "token attr");
+        result += renderSyntaxSegment(equals);
+        result += renderSyntaxSegment(attrValue, "token string");
+      } else if (metaOrClose) {
+        result += renderSyntaxSegment(metaOrClose, "token bracket");
+      } else {
+        result += renderSyntaxSegment(match);
+      }
+
+      lastIndex = offset + match.length;
       return match;
     },
   );
+
+  result += renderSyntaxSegment(value.slice(lastIndex));
+  return result;
 }
 
 function highlightCode(value: string, syntax: SyntaxKind) {
-  if (syntax === "text") return escapeHtml(value);
+  if (syntax === "text") return renderSyntaxSegment(value);
   return syntax === "json" ? highlightJson(value) : highlightXml(value);
 }
 
@@ -343,8 +385,13 @@ interface CodeEditorProps {
   onChange?: (value: string) => void;
 }
 
-function CodeEditor({ label, value, syntax, placeholder, readOnly, error, actions, onChange }: CodeEditorProps) {
+function CodeEditorBase({ label, value, syntax, placeholder, readOnly, error, actions, onChange }: CodeEditorProps) {
   const highlightRef = React.useRef<HTMLPreElement>(null);
+
+  const highlightedHtml = React.useMemo(
+    () => (error ? renderSyntaxSegment(value) : highlightCode(value, syntax)),
+    [value, syntax, error],
+  );
 
   const syncScroll = (event: React.UIEvent<HTMLTextAreaElement>) => {
     if (!highlightRef.current) return;
@@ -363,7 +410,7 @@ function CodeEditor({ label, value, syntax, placeholder, readOnly, error, action
           ref={highlightRef}
           className="syntax-layer"
           aria-hidden="true"
-          dangerouslySetInnerHTML={{ __html: error ? escapeHtml(value) : highlightCode(value, syntax) }}
+          dangerouslySetInnerHTML={{ __html: highlightedHtml }}
         />
         <textarea
           value={value}
@@ -380,6 +427,8 @@ function CodeEditor({ label, value, syntax, placeholder, readOnly, error, action
   );
 }
 
+const CodeEditor = React.memo(CodeEditorBase);
+
 interface ContentPane {
   id: number;
   value: string;
@@ -387,7 +436,7 @@ interface ContentPane {
 }
 
 const MAX_CONTENT_PANES = 4;
-const APP_VERSION = "0.0.5";
+const APP_VERSION = "0.0.6";
 const REPOSITORY_URL = "https://github.com/DarlingCY/OneTool";
 const createEmptyContentPane = (): ContentPane => ({ id: 1, value: "", error: "" });
 const createInitialContentPaneState = (): Record<ContentToolKind, ContentPane[]> => ({
@@ -405,19 +454,19 @@ function App() {
   const [updateStatus, setUpdateStatus] = React.useState("");
   const [checkingUpdate, setCheckingUpdate] = React.useState(false);
   const [selectedImageName, setSelectedImageName] = React.useState("");
-  const [selectedImageBytes, setSelectedImageBytes] = React.useState<number[]>([]);
+  const [selectedImageBytes, setSelectedImageBytes] = React.useState<Uint8Array<ArrayBuffer>>(new Uint8Array());
   const [imageMode, setImageMode] = React.useState<"lossless" | "high">("lossless");
   const [imageQuality, setImageQuality] = React.useState(80);
   const [imageResult, setImageResult] = React.useState<ImageCompressResult | null>(null);
   const [imageStatus, setImageStatus] = React.useState("");
   const [compressingImage, setCompressingImage] = React.useState(false);
   const [selectedMediaName, setSelectedMediaName] = React.useState("");
-  const [selectedMediaBytes, setSelectedMediaBytes] = React.useState<number[]>([]);
+  const [selectedMediaBytes, setSelectedMediaBytes] = React.useState<Uint8Array<ArrayBuffer>>(new Uint8Array());
   const [selectedMediaMime, setSelectedMediaMime] = React.useState("");
   const [mediaBase64, setMediaBase64] = React.useState("");
   const [mediaStatus, setMediaStatus] = React.useState("");
   const [mediaIncludeDataUrl, setMediaIncludeDataUrl] = React.useState(true);
-  const [decodedMediaBytes, setDecodedMediaBytes] = React.useState<number[]>([]);
+  const [decodedMediaBytes, setDecodedMediaBytes] = React.useState<Uint8Array<ArrayBuffer>>(new Uint8Array());
   const [decodedMediaMime, setDecodedMediaMime] = React.useState("");
   const [decodedMediaExtension, setDecodedMediaExtension] = React.useState("");
   const [mediaPreviewUrl, setMediaPreviewUrl] = React.useState("");
@@ -441,11 +490,11 @@ function App() {
     setOutput("");
     setError("");
     setSelectedMediaName("");
-    setSelectedMediaBytes([]);
+    setSelectedMediaBytes(new Uint8Array());
     setSelectedMediaMime("");
     setMediaBase64("");
     setMediaStatus("");
-    setDecodedMediaBytes([]);
+    setDecodedMediaBytes(new Uint8Array());
     setDecodedMediaMime("");
     setDecodedMediaExtension("");
   }, [tool]);
@@ -471,7 +520,7 @@ function App() {
       return;
     }
 
-    const url = URL.createObjectURL(new Blob([new Uint8Array(previewBytes)], { type: previewMime }));
+    const url = URL.createObjectURL(new Blob([previewBytes], { type: previewMime }));
     setMediaPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [tool, decodedMediaBytes, decodedMediaMime, selectedMediaBytes, selectedMediaMime]);
@@ -586,7 +635,10 @@ function App() {
   };
 
   const activeSyntax: SyntaxKind = tool === "json" ? "json" : tool === "xml" ? "xml" : "text";
-  const outputSyntax: SyntaxKind = error ? "text" : detectOutputSyntax(output);
+  const outputSyntax: SyntaxKind = React.useMemo(
+    () => (error ? "text" : detectOutputSyntax(output)),
+    [error, output],
+  );
   const isContentTool = isContentToolKind(tool);
   const isBase64TextTool = tool === "base64-text";
   const isMediaBase64Tool = isMediaBase64ToolKind(tool);
@@ -642,7 +694,7 @@ function App() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    const bytes = new Uint8Array(await file.arrayBuffer());
     setSelectedImageName(file.name);
     setSelectedImageBytes(bytes);
     setImageResult(null);
@@ -684,7 +736,7 @@ function App() {
     });
     if (!path) return;
 
-    await writeFile(path, new Uint8Array(imageResult.data));
+    await writeFile(path, base64ToBytes(imageResult.data));
     setImageStatus(`已保存：${path}`);
   };
 
@@ -692,12 +744,12 @@ function App() {
     const file = event.target.files?.[0];
     if (!file || !isMediaBase64ToolKind(tool)) return;
 
-    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    const bytes = new Uint8Array(await file.arrayBuffer());
     const mediaConfig = getMediaToolConfig(tool);
     setSelectedMediaName(file.name);
     setSelectedMediaBytes(bytes);
     setSelectedMediaMime(file.type || mediaConfig.defaultMime);
-    setDecodedMediaBytes([]);
+    setDecodedMediaBytes(new Uint8Array());
     setDecodedMediaMime("");
     setDecodedMediaExtension("");
     setMediaStatus(`已选择 ${file.name}（${formatBytes(file.size)}）`);
@@ -713,7 +765,7 @@ function App() {
 
     const mediaConfig = getMediaToolConfig(tool);
     const mime = selectedMediaMime || mediaConfig.defaultMime;
-    const rawBase64 = bytesToBase64(Uint8Array.from(selectedMediaBytes));
+    const rawBase64 = bytesToBase64(selectedMediaBytes);
     const result = mediaIncludeDataUrl ? `data:${mime};base64,${rawBase64}` : rawBase64;
     setMediaBase64(result);
     setMediaStatus(`已生成 Base64（${mediaIncludeDataUrl ? "包含 data: 前缀" : "原始 Base64"}）`);
@@ -726,7 +778,7 @@ function App() {
     try {
       const payload = extractBase64Payload(mediaBase64);
       const mime = payload.mime || selectedMediaMime || mediaConfig.defaultMime;
-      const bytes = Array.from(base64ToBytes(mediaBase64));
+      const bytes = base64ToBytes(mediaBase64);
       const extension = extensionFromMime(mime, selectedMediaName ? extensionFromName(selectedMediaName) || mediaConfig.defaultExtension : mediaConfig.defaultExtension);
 
       setDecodedMediaBytes(bytes);
@@ -734,7 +786,7 @@ function App() {
       setDecodedMediaExtension(extension);
       setMediaStatus(`Base64 解码完成：${formatBytes(bytes.length)} · ${payload.hasDataUrlPrefix ? mime : `${mime}（按当前工具推断）`}`);
     } catch (err) {
-      setDecodedMediaBytes([]);
+      setDecodedMediaBytes(new Uint8Array());
       setDecodedMediaMime("");
       setDecodedMediaExtension("");
       setMediaStatus(typeof err === "string" ? err : err instanceof Error ? err.message : "Base64 解码失败");
@@ -757,7 +809,7 @@ function App() {
     });
     if (!path) return;
 
-    await writeFile(path, new Uint8Array(decodedMediaBytes));
+    await writeFile(path, decodedMediaBytes);
     setMediaStatus(`已保存：${path}`);
   };
 
