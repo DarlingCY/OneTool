@@ -16,6 +16,9 @@ use ofb::Ofb;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+const MAX_IMAGE_INPUT_BYTES: usize = 50 * 1024 * 1024;
+const MAX_IMAGE_PIXELS: u64 = 80_000_000;
+
 #[tauri::command]
 fn process_text(operation: &str, input: &str) -> Result<String, String> {
     match operation {
@@ -34,7 +37,6 @@ struct ImageCompressResult {
     /// 压缩后图片字节的 Base64（标准编码），前端解码为 Uint8Array。
     data: String,
     extension: String,
-    mime: String,
     original_size: usize,
     compressed_size: usize,
     width: u32,
@@ -58,13 +60,12 @@ fn compress_image(request: tauri::ipc::Request<'_>) -> Result<ImageCompressResul
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u8>().ok());
 
-    let (data, extension, mime, original_size, compressed_size, width, height) =
+    let (data, extension, original_size, compressed_size, width, height) =
         compress_image_bytes(input, &mode, quality)?;
 
     Ok(ImageCompressResult {
         data: general_purpose::STANDARD.encode(&data),
         extension: extension.to_string(),
-        mime: mime.to_string(),
         original_size,
         compressed_size,
         width,
@@ -77,15 +78,21 @@ fn compress_image_bytes(
     input: &[u8],
     mode: &str,
     quality: Option<u8>,
-) -> Result<(Vec<u8>, &'static str, &'static str, usize, usize, u32, u32), String> {
+) -> Result<(Vec<u8>, &'static str, usize, usize, u32, u32), String> {
     if input.is_empty() {
         return Err("请选择图片文件".to_string());
+    }
+    if input.len() > MAX_IMAGE_INPUT_BYTES {
+        return Err("图片文件过大，当前限制 50 MB".to_string());
     }
 
     let format = image::guess_format(input).map_err(|err| format!("图片格式识别失败：{err}"))?;
     let image = image::load_from_memory(input).map_err(|err| format!("图片读取失败：{err}"))?;
     let (width, height) = image.dimensions();
-    let (extension, mime) = image_format_meta(format);
+    if u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS {
+        return Err("图片像素尺寸过大，无法安全处理".to_string());
+    }
+    let extension = image_format_extension(format);
     let mode = mode.to_ascii_lowercase();
     let quality = quality.unwrap_or(80).clamp(1, 100);
 
@@ -104,7 +111,7 @@ fn compress_image_bytes(
     };
     let compressed_size = data.len();
 
-    Ok((data, extension, mime, original_size, compressed_size, width, height))
+    Ok((data, extension, original_size, compressed_size, width, height))
 }
 
 fn optimize_png_lossless(image: &image::DynamicImage, width: u32, height: u32) -> Result<Vec<u8>, String> {
@@ -125,16 +132,16 @@ fn compress_jpeg_visual(image: &image::DynamicImage, width: u32, height: u32, qu
     Ok(output)
 }
 
-fn image_format_meta(format: ImageFormat) -> (&'static str, &'static str) {
+fn image_format_extension(format: ImageFormat) -> &'static str {
     match format {
-        ImageFormat::Png => ("png", "image/png"),
-        ImageFormat::Jpeg => ("jpg", "image/jpeg"),
-        ImageFormat::WebP => ("webp", "image/webp"),
-        ImageFormat::Gif => ("gif", "image/gif"),
-        ImageFormat::Bmp => ("bmp", "image/bmp"),
-        ImageFormat::Ico => ("ico", "image/x-icon"),
-        ImageFormat::Tiff => ("tiff", "image/tiff"),
-        _ => ("img", "application/octet-stream"),
+        ImageFormat::Png => "png",
+        ImageFormat::Jpeg => "jpg",
+        ImageFormat::WebP => "webp",
+        ImageFormat::Gif => "gif",
+        ImageFormat::Bmp => "bmp",
+        ImageFormat::Ico => "ico",
+        ImageFormat::Tiff => "tiff",
+        _ => "img",
     }
 }
 
@@ -252,10 +259,11 @@ fn process_sm4(input: &str, options: Sm4Options) -> Result<String, String> {
     let cipher = Sm4CipherMode::new(&key, mode).map_err(|err| format!("SM4 初始化失败：{err:?}"))?;
     let data = decode_by_format(input, &options.input_format)?;
     let action = options.action.to_ascii_lowercase();
-    let use_builtin_cbc_pkcs7 = options.mode.eq_ignore_ascii_case("CBC") && options.padding.eq_ignore_ascii_case("PKCS7Padding");
+    let is_cbc = options.mode.eq_ignore_ascii_case("CBC");
+    let use_builtin_cbc_pkcs7 = is_cbc && options.padding.eq_ignore_ascii_case("PKCS7Padding");
 
     let prepared = if action == "encrypt" {
-        if use_builtin_cbc_pkcs7 {
+        if !is_cbc || use_builtin_cbc_pkcs7 {
             data.clone()
         } else {
             apply_sm4_padding(&data, &options.padding)?
@@ -269,6 +277,8 @@ fn process_sm4(input: &str, options: Sm4Options) -> Result<String, String> {
         "decrypt" => {
             let decrypted = cipher.decrypt(&[], &prepared, &iv).map_err(|err| format!("SM4 解密失败：{err:?}"))?;
             if use_builtin_cbc_pkcs7 {
+                decrypted
+            } else if !is_cbc {
                 decrypted
             } else {
                 remove_sm4_padding(&decrypted, &options.padding)?
@@ -384,8 +394,7 @@ fn parse_sm4_mode(mode: &str) -> Result<CipherMode, String> {
         "CFB" => Ok(CipherMode::Cfb),
         "CTR" => Ok(CipherMode::Ctr),
         "OFB" => Ok(CipherMode::Ofb),
-        "GCM" => Ok(CipherMode::Gcm),
-        _ => Err("SM4 当前支持 CBC/CFB/CTR/OFB/GCM；ECB/CTS 暂未实现".to_string()),
+        _ => Err("SM4 当前支持 CBC/CFB/CTR/OFB；GCM/ECB/CTS 暂未实现".to_string()),
     }
 }
 
@@ -698,7 +707,6 @@ fn closing_xml_tag_for(token: &str) -> Option<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -843,9 +851,8 @@ mod tests {
 
         let result = compress_image_bytes(&source, "lossless", None).unwrap();
 
-        let (data, extension, mime, _original_size, _compressed_size, width, height) = result;
+        let (data, extension, _original_size, _compressed_size, width, height) = result;
         assert_eq!(extension, "png");
-        assert_eq!(mime, "image/png");
         assert_eq!(width, 32);
         assert_eq!(height, 32);
         assert!(!data.is_empty());

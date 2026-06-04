@@ -6,61 +6,10 @@ import { writeFile } from "@tauri-apps/plugin-fs";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { Check, Copy, Github, Image as ImageIcon, Play, Plus, RefreshCw, Save, X } from "lucide-react";
+import { CodeEditor, type SyntaxKind } from "./components/CodeEditor";
+import { base64PayloadToBytes, base64ToBytes, bytesToBase64, extractBase64Payload } from "./lib/base64";
+import { categories, isAesToolKind, isContentToolKind, isMediaBase64ToolKind, isSmToolKind, type AesToolKind, type ContentToolKind, type ImageToolKind, type MediaBase64ToolKind, type SmToolKind, type TextOperationKind, type ToolKind } from "./tools";
 import "./styles.css";
-
-type ContentToolKind = "json" | "xml";
-type Base64ToolKind = "base64-text" | "base64-image" | "base64-audio";
-type MediaBase64ToolKind = "base64-image" | "base64-audio";
-type TextOperationKind = "json-format" | "json-minify" | "json-sort-key" | "xml-format" | "xml-minify";
-type AesToolKind = "aes";
-type SmToolKind = "sm2" | "sm3-hash" | "sm4";
-type ImageToolKind = "image-compress";
-type ToolKind = ContentToolKind | Base64ToolKind | AesToolKind | SmToolKind | ImageToolKind;
-type SyntaxKind = "json" | "xml" | "text";
-
-interface ToolDef {
-  id: ToolKind;
-  label: string;
-  description: string;
-}
-
-const categories = [
-  {
-    name: "JSON",
-    tools: [
-      { id: "json", label: "JSON 格式化/压缩", description: "JSON 格式化与压缩" },
-    ] as ToolDef[],
-  },
-  {
-    name: "XML",
-    tools: [
-      { id: "xml", label: "XML 格式化/压缩", description: "XML 格式化与压缩" },
-    ] as ToolDef[],
-  },
-  {
-    name: "Base64",
-    tools: [
-      { id: "base64-text", label: "文本 ↔ Base64", description: "UTF-8 文本与 Base64 互转" },
-      { id: "base64-image", label: "图片 ↔ Base64", description: "图片文件与 Base64 互转" },
-      { id: "base64-audio", label: "音频 ↔ Base64", description: "音频文件与 Base64 互转" },
-    ] as ToolDef[],
-  },
-  {
-    name: "加解密",
-    tools: [
-      { id: "aes", label: "AES 加密/解密", description: "AES ECB/CBC/CTR/OFB/CFB 加密与解密" },
-      { id: "sm2", label: "SM2 加密/解密", description: "国密 SM2 公钥加密与私钥解密" },
-      { id: "sm3-hash", label: "SM3 摘要", description: "国密 SM3 哈希摘要" },
-      { id: "sm4", label: "SM4 加密/解密", description: "国密 SM4 CBC/CFB/CTR/OFB/GCM 加密与解密" },
-    ] as ToolDef[],
-  },
-  {
-    name: "图片",
-    tools: [
-      { id: "image-compress", label: "图片压缩", description: "压缩 JPEG/PNG 图片并保存" },
-    ] as ToolDef[],
-  },
-];
 
 interface AesOptions {
   action: "encrypt" | "decrypt";
@@ -99,7 +48,6 @@ interface ImageCompressOptions {
 interface ImageCompressResult {
   data: string;
   extension: string;
-  mime: string;
   originalSize: number;
   compressedSize: number;
   width: number;
@@ -119,6 +67,14 @@ interface MediaToolConfig {
 
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const MAX_IMAGE_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_MEDIA_FILE_BYTES = 30 * 1024 * 1024;
+const MAX_MEDIA_BASE64_CHARS = Math.ceil((MAX_MEDIA_FILE_BYTES * 4) / 3) + 1024;
+const MAX_SYNTAX_DETECT_CHARS = 200_000;
+
+function isFileTooLarge(file: File, maxBytes: number) {
+  return file.size > maxBytes;
+}
 
 async function processText(operation: TextOperationKind, input: string) {
   return invoke<string>("process_text", { operation, input });
@@ -148,45 +104,6 @@ async function compressImage(input: Uint8Array, options: ImageCompressOptions) {
   const headers: Record<string, string> = { "x-mode": options.mode };
   if (options.quality !== undefined) headers["x-quality"] = String(options.quality);
   return invoke<ImageCompressResult>("compress_image", input, { headers });
-}
-
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
-  }
-  return btoa(binary);
-}
-
-function extractBase64Payload(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) throw new Error("请输入 Base64 内容");
-
-  const dataUrlMatch = trimmed.match(/^data:([^,]*?);base64,([\s\S]+)$/i);
-  if (dataUrlMatch) {
-    const mime = dataUrlMatch[1]?.split(";")[0]?.trim() || "application/octet-stream";
-    return {
-      mime,
-      payload: dataUrlMatch[2].replace(/\s+/g, ""),
-      hasDataUrlPrefix: true,
-    };
-  }
-
-  return {
-    mime: "",
-    payload: trimmed.replace(/\s+/g, ""),
-    hasDataUrlPrefix: false,
-  };
-}
-
-function base64ToBytes(value: string) {
-  const { payload } = extractBase64Payload(value);
-  const binary = atob(payload);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
 }
 
 function encodeTextAsBase64(value: string) {
@@ -252,107 +169,10 @@ function getMediaToolConfig(tool: MediaBase64ToolKind): MediaToolConfig {
   };
 }
 
-function isAesToolKind(value: ToolKind): value is AesToolKind {
-  return value === "aes";
-}
-
-function isContentToolKind(value: ToolKind): value is ContentToolKind {
-  return value === "json" || value === "xml";
-}
-
-function isMediaBase64ToolKind(value: ToolKind): value is MediaBase64ToolKind {
-  return value === "base64-image" || value === "base64-audio";
-}
-
-function isSmToolKind(value: ToolKind): value is SmToolKind {
-  return value.startsWith("sm") as boolean;
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function escapeAttribute(value: string) {
-  return escapeHtml(value).replace(/\r/g, "&#13;").replace(/\n/g, "&#10;");
-}
-
-function renderSyntaxSegment(value: string, className?: string) {
-  if (!value) return "";
-  const classAttr = className ? ` class="${className}"` : "";
-  return `<span${classAttr} data-text="${escapeAttribute(value)}"></span>`;
-}
-
-function highlightJson(value: string) {
-  const tokenPattern = /"(?:\\.|[^"\\])*"(\s*:)?|\b(true|false|null)\b|-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/g;
-  let result = "";
-  let lastIndex = 0;
-
-  value.replace(tokenPattern, (match, colon: string | undefined, literal: string | undefined, offset: number) => {
-    result += renderSyntaxSegment(value.slice(lastIndex, offset));
-
-    if (match.startsWith('"')) {
-      const token = colon ? match.slice(0, -colon.length) : match;
-      result += renderSyntaxSegment(token, colon ? "token key" : "token string");
-      result += renderSyntaxSegment(colon ?? "");
-    } else if (literal) {
-      result += renderSyntaxSegment(match, "token literal");
-    } else {
-      result += renderSyntaxSegment(match, "token number");
-    }
-
-    lastIndex = offset + match.length;
-    return match;
-  });
-
-  result += renderSyntaxSegment(value.slice(lastIndex));
-  return result;
-}
-
-function highlightXml(value: string) {
-  const tokenPattern = /(<\/?)([\w:.-]+)|([\w:.-]+)(=)(".*?")|(<![\s\S]*?>|<\?[\s\S]*?\?>|\/?>)/g;
-  let result = "";
-  let lastIndex = 0;
-
-  value.replace(
-    tokenPattern,
-    (match, open: string | undefined, tag: string | undefined, attr: string | undefined, equals: string | undefined, attrValue: string | undefined, metaOrClose: string | undefined, offset: number) => {
-      result += renderSyntaxSegment(value.slice(lastIndex, offset));
-
-      if (open && tag) {
-        result += renderSyntaxSegment(open, "token bracket");
-        result += renderSyntaxSegment(tag, "token tag");
-      } else if (attr && equals && attrValue) {
-        result += renderSyntaxSegment(attr, "token attr");
-        result += renderSyntaxSegment(equals);
-        result += renderSyntaxSegment(attrValue, "token string");
-      } else if (metaOrClose) {
-        result += renderSyntaxSegment(metaOrClose, "token bracket");
-      } else {
-        result += renderSyntaxSegment(match);
-      }
-
-      lastIndex = offset + match.length;
-      return match;
-    },
-  );
-
-  result += renderSyntaxSegment(value.slice(lastIndex));
-  return result;
-}
-
-function highlightCode(value: string, syntax: SyntaxKind) {
-  if (syntax === "text") return renderSyntaxSegment(value);
-  return syntax === "json" ? highlightJson(value) : highlightXml(value);
-}
-
 function detectOutputSyntax(value: string): SyntaxKind {
   const trimmed = value.trim();
   if (!trimmed) return "text";
+  if (trimmed.length > MAX_SYNTAX_DETECT_CHARS) return "text";
 
   try {
     JSON.parse(trimmed);
@@ -374,61 +194,6 @@ function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(2)} MB`;
 }
 
-interface CodeEditorProps {
-  label: string;
-  value: string;
-  syntax: SyntaxKind;
-  placeholder: string;
-  readOnly?: boolean;
-  error?: boolean;
-  actions?: React.ReactNode;
-  onChange?: (value: string) => void;
-}
-
-function CodeEditorBase({ label, value, syntax, placeholder, readOnly, error, actions, onChange }: CodeEditorProps) {
-  const highlightRef = React.useRef<HTMLPreElement>(null);
-
-  const highlightedHtml = React.useMemo(
-    () => (error ? renderSyntaxSegment(value) : highlightCode(value, syntax)),
-    [value, syntax, error],
-  );
-
-  const syncScroll = (event: React.UIEvent<HTMLTextAreaElement>) => {
-    if (!highlightRef.current) return;
-    highlightRef.current.scrollTop = event.currentTarget.scrollTop;
-    highlightRef.current.scrollLeft = event.currentTarget.scrollLeft;
-  };
-
-  return (
-    <div className="editor-container">
-      <div className="editor-header output-header">
-        <span>{label}</span>
-        {actions}
-      </div>
-      <div className={`code-surface ${error ? "has-error" : ""}`}>
-        <pre
-          ref={highlightRef}
-          className="syntax-layer"
-          aria-hidden="true"
-          dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-        />
-        <textarea
-          value={value}
-          onChange={(e) => onChange?.(e.target.value)}
-          onScroll={syncScroll}
-          readOnly={readOnly}
-          wrap="soft"
-          spellCheck={false}
-          className={`editor-textarea ${error ? "error" : ""}`}
-          placeholder={placeholder}
-        />
-      </div>
-    </div>
-  );
-}
-
-const CodeEditor = React.memo(CodeEditorBase);
-
 interface ContentPane {
   id: number;
   value: string;
@@ -436,7 +201,7 @@ interface ContentPane {
 }
 
 const MAX_CONTENT_PANES = 4;
-const APP_VERSION = "0.0.6";
+const APP_VERSION = import.meta.env.VITE_APP_VERSION || "0.0.0";
 const REPOSITORY_URL = "https://github.com/DarlingCY/OneTool";
 const createEmptyContentPane = (): ContentPane => ({ id: 1, value: "", error: "" });
 const createInitialContentPaneState = (): Record<ContentToolKind, ContentPane[]> => ({
@@ -525,14 +290,12 @@ function App() {
     return () => URL.revokeObjectURL(url);
   }, [tool, decodedMediaBytes, decodedMediaMime, selectedMediaBytes, selectedMediaMime]);
 
-  const run = async (textOperation?: TextOperationKind, actionOverride?: "encrypt" | "decrypt" | "encode" | "decode") => {
+  const run = async (actionOverride?: "encrypt" | "decrypt" | "encode" | "decode") => {
     setError("");
     setCopied(false);
     try {
       let result: string;
-      if (textOperation) {
-        result = await processText(textOperation, input);
-      } else if (tool === "base64-text") {
+      if (tool === "base64-text") {
         result = (actionOverride ?? "encode") === "decode" ? decodeBase64AsText(input) : encodeTextAsBase64(input);
       } else if (isAesToolKind(tool)) {
         result = await processAes(input, {
@@ -565,8 +328,6 @@ function App() {
           inputFormat: smInputFormat,
           outputFormat: smOutputFormat,
         });
-      } else if (isContentToolKind(tool)) {
-        result = await processText(`${tool}-format` as TextOperationKind, input);
       } else {
         throw new Error("不支持的操作");
       }
@@ -629,8 +390,12 @@ function App() {
         ...state,
         [activeTool]: state[activeTool].map((item) => (item.id === id ? { ...item, value: result, error: "" } : item)),
       }));
-    } catch {
-      // 输入格式不正确时保持原内容不变，不显示错误状态。
+    } catch (err) {
+      const message = typeof err === "string" ? err : err instanceof Error ? err.message : "输入格式不正确";
+      setContentPaneState((state) => ({
+        ...state,
+        [activeTool]: state[activeTool].map((item) => (item.id === id ? { ...item, error: message } : item)),
+      }));
     }
   };
 
@@ -693,6 +458,15 @@ function App() {
   const selectImage = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    event.target.value = "";
+
+    if (isFileTooLarge(file, MAX_IMAGE_FILE_BYTES)) {
+      setSelectedImageName("");
+      setSelectedImageBytes(new Uint8Array());
+      setImageResult(null);
+      setImageStatus(`图片文件过大：${formatBytes(file.size)}，当前限制 ${formatBytes(MAX_IMAGE_FILE_BYTES)}`);
+      return;
+    }
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     setSelectedImageName(file.name);
@@ -743,6 +517,18 @@ function App() {
   const selectMediaFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !isMediaBase64ToolKind(tool)) return;
+    event.target.value = "";
+
+    if (isFileTooLarge(file, MAX_MEDIA_FILE_BYTES)) {
+      setSelectedMediaName("");
+      setSelectedMediaBytes(new Uint8Array());
+      setSelectedMediaMime("");
+      setDecodedMediaBytes(new Uint8Array());
+      setDecodedMediaMime("");
+      setDecodedMediaExtension("");
+      setMediaStatus(`文件过大：${formatBytes(file.size)}，当前限制 ${formatBytes(MAX_MEDIA_FILE_BYTES)}`);
+      return;
+    }
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     const mediaConfig = getMediaToolConfig(tool);
@@ -753,7 +539,6 @@ function App() {
     setDecodedMediaMime("");
     setDecodedMediaExtension("");
     setMediaStatus(`已选择 ${file.name}（${formatBytes(file.size)}）`);
-    event.target.value = "";
   };
 
   const encodeMediaFile = () => {
@@ -775,10 +560,25 @@ function App() {
     if (!isMediaBase64ToolKind(tool)) return;
     const mediaConfig = getMediaToolConfig(tool);
 
+    if (mediaBase64.length > MAX_MEDIA_BASE64_CHARS) {
+      setDecodedMediaBytes(new Uint8Array());
+      setDecodedMediaMime("");
+      setDecodedMediaExtension("");
+      setMediaStatus(`Base64 内容过大，当前限制约 ${formatBytes(MAX_MEDIA_FILE_BYTES)} 文件大小`);
+      return;
+    }
+
     try {
       const payload = extractBase64Payload(mediaBase64);
       const mime = payload.mime || selectedMediaMime || mediaConfig.defaultMime;
-      const bytes = base64ToBytes(mediaBase64);
+      const bytes = base64PayloadToBytes(payload.payload);
+      if (bytes.length > MAX_MEDIA_FILE_BYTES) {
+        setDecodedMediaBytes(new Uint8Array());
+        setDecodedMediaMime("");
+        setDecodedMediaExtension("");
+        setMediaStatus(`解码后文件过大：${formatBytes(bytes.length)}，当前限制 ${formatBytes(MAX_MEDIA_FILE_BYTES)}`);
+        return;
+      }
       const extension = extensionFromMime(mime, selectedMediaName ? extensionFromName(selectedMediaName) || mediaConfig.defaultExtension : mediaConfig.defaultExtension);
 
       setDecodedMediaBytes(bytes);
@@ -869,8 +669,8 @@ function App() {
             {isSm2Tool && <label className="wide">公钥<input value={sm2PublicKey} onChange={(e) => setSm2PublicKey(e.target.value)} placeholder="SM2 公钥" /></label>}
             {isSm2Tool && <label className="wide">私钥<input value={sm2PrivateKey} onChange={(e) => setSm2PrivateKey(e.target.value)} placeholder="SM2 私钥" /></label>}
             {isSm2Tool && <label className="inline-action"><span>&nbsp;</span><button className="btn-copy" type="button" onClick={generateKeys}>生成密钥对</button></label>}
-            {isSm4Tool && <label>模式<select value={sm4Mode} onChange={(e) => setSm4Mode(e.target.value)}><option>CBC</option><option>CFB</option><option>CTR</option><option>OFB</option><option>GCM</option></select></label>}
-            {isSm4Tool && <label>填充<select value={sm4Padding} onChange={(e) => setSm4Padding(e.target.value)}><option value="PKCS7Padding">PKCS7Padding</option><option value="ZeroPadding">ZeroPadding</option><option value="ISO10126Padding">ISO10126Padding</option><option value="NoPadding">NoPadding</option></select></label>}
+            {isSm4Tool && <label>模式<select value={sm4Mode} onChange={(e) => setSm4Mode(e.target.value)}><option>CBC</option><option>CFB</option><option>CTR</option><option>OFB</option></select></label>}
+            {isSm4Tool && sm4Mode === "CBC" && <label>填充<select value={sm4Padding} onChange={(e) => setSm4Padding(e.target.value)}><option value="PKCS7Padding">PKCS7Padding</option><option value="ZeroPadding">ZeroPadding</option><option value="ISO10126Padding">ISO10126Padding</option><option value="NoPadding">NoPadding</option></select></label>}
             {isSm4Tool && <label className="wide">密钥<input value={sm4Key} onChange={(e) => setSm4Key(e.target.value)} placeholder="16 字节" /></label>}
             {isSm4Tool && <label className="wide">偏移量 / IV<input value={sm4Iv} onChange={(e) => setSm4Iv(e.target.value)} placeholder="16 字节，自动识别 string/hex/base64" /></label>}
             <label>输入格式<select value={smInputFormat} onChange={(e) => setSmInputFormat(e.target.value)}><option value="string">string</option><option value="hex">hex</option><option value="base64">base64</option></select></label>
@@ -1036,37 +836,26 @@ function App() {
               placeholder="在此粘贴您的内容..."
               onChange={setInput}
               actions={
-                isContentTool ? (
-                  <div className="button-group">
-                    <button className="btn-run" onClick={() => run(`${tool}-format` as TextOperationKind)}>
-                      <Play size={14} /> 格式化
-                    </button>
-                    <button className="btn-run secondary" onClick={() => run(`${tool}-minify` as TextOperationKind)}>
-                      压缩
-                    </button>
-                  </div>
-                ) : (
-                  <div className="button-group">
-                    {(isAesTool || isSm2Tool || isSm4Tool || isBase64TextTool) ? (
-                      <>
-                        <button className="btn-run" onClick={() => {
-                          void run(undefined, isBase64TextTool ? "encode" : "encrypt");
-                        }}>
-                          <Play size={14} /> {isBase64TextTool ? "编码" : "加密"}
-                        </button>
-                        <button className="btn-run secondary" onClick={() => {
-                          void run(undefined, isBase64TextTool ? "decode" : "decrypt");
-                        }}>
-                          {isBase64TextTool ? "解码" : "解密"}
-                        </button>
-                      </>
-                    ) : (
-                      <button className="btn-run" onClick={() => run()}>
-                        <Play size={14} /> 执行
+                <div className="button-group">
+                  {(isAesTool || isSm2Tool || isSm4Tool || isBase64TextTool) ? (
+                    <>
+                      <button className="btn-run" onClick={() => {
+                        void run(isBase64TextTool ? "encode" : "encrypt");
+                      }}>
+                        <Play size={14} /> {isBase64TextTool ? "编码" : "加密"}
                       </button>
-                    )}
-                  </div>
-                )
+                      <button className="btn-run secondary" onClick={() => {
+                        void run(isBase64TextTool ? "decode" : "decrypt");
+                      }}>
+                        {isBase64TextTool ? "解码" : "解密"}
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn-run" onClick={() => run()}>
+                      <Play size={14} /> 执行
+                    </button>
+                  )}
+                </div>
               }
             />
 
