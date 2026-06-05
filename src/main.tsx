@@ -6,10 +6,12 @@ import { writeFile } from "@tauri-apps/plugin-fs";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { Check, Copy, Github, Image as ImageIcon, Play, Plus, RefreshCw, Save, X } from "lucide-react";
-import { CodeEditor, type SyntaxKind } from "./components/CodeEditor";
+import type { SyntaxKind } from "./components/CodeEditor";
 import { base64PayloadToBytes, base64ToBytes, bytesToBase64, extractBase64Payload } from "./lib/base64";
 import { categories, isAesToolKind, isContentToolKind, isMediaBase64ToolKind, isSmToolKind, type AesToolKind, type ContentToolKind, type ImageToolKind, type MediaBase64ToolKind, type SmToolKind, type TextOperationKind, type ToolKind } from "./tools";
 import "./styles.css";
+
+const CodeEditor = React.lazy(() => import("./components/CodeEditor"));
 
 interface AesOptions {
   action: "encrypt" | "decrypt";
@@ -653,6 +655,7 @@ function App() {
       </aside>
 
       <main className="main-content">
+        <React.Suspense fallback={<div className="editor-loading">编辑器加载中...</div>}>
         {isAesTool && (
           <section className="aes-options">
             <label>模式<select value={aesMode} onChange={(e) => setAesMode(e.target.value)}><option>ECB</option><option>CBC</option><option>CTR</option><option>OFB</option><option>CFB</option></select></label>
@@ -881,6 +884,7 @@ function App() {
             />
           </div>
         )}
+        </React.Suspense>
       </main>
     </div>
   );

@@ -235,6 +235,15 @@ button, textarea, pre, input, select { font: inherit; }
   min-width: 0;
 }
 
+.editor-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .aes-options {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
@@ -406,92 +415,40 @@ button, textarea, pre, input, select { font: inherit; }
   white-space: nowrap;
 }
 
-.editor-performance-note {
-  margin-left: auto;
-  margin-right: 8px;
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.code-surface {
-  position: relative;
+.codemirror-surface {
   flex: 1;
   min-height: 0;
   background: transparent;
-  scrollbar-gutter: stable;
+  overflow: hidden;
 }
 
-.syntax-layer,
-.editor-textarea {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  border: none;
-  padding: 16px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  tab-size: 2;
-  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.syntax-layer::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}
-
-.editor-textarea::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-}
-
-.editor-textarea::-webkit-scrollbar-thumb {
-  border-width: 4px;
-}
-
-.syntax-layer {
-  pointer-events: none;
-  color: var(--text-main);
-}
-
-.code-surface:focus-within .syntax-layer {
-  visibility: hidden;
-}
-
-.editor-textarea {
-  flex: 1;
-  background: transparent;
-  resize: none;
-  outline: none;
-  color: transparent;
-  caret-color: var(--text-main);
-  -webkit-text-fill-color: transparent;
-}
-
-.code-surface:focus-within .editor-textarea {
-  color: var(--text-main);
-  -webkit-text-fill-color: var(--text-main);
-}
-
-.editor-textarea.plain-text {
-  color: var(--text-main);
-  -webkit-text-fill-color: var(--text-main);
-}
-
-.editor-textarea.error {
+.codemirror-surface.has-error .cm-content {
   color: var(--danger);
-  -webkit-text-fill-color: var(--danger);
 }
 
-.editor-textarea::placeholder {
-  color: var(--text-muted);
-  opacity: 0.5;
+.codemirror-surface.has-error .cm-cursor {
+  border-left-color: var(--danger);
+}
+
+.cm-tooltip {
+  border: 1px solid var(--border-color) !important;
+  background: var(--bg-panel) !important;
+  color: var(--text-main) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+
+.cm-panels {
+  border-color: var(--border-color) !important;
+  background: var(--bg-panel) !important;
+  color: var(--text-main) !important;
+}
+
+.cm-searchMatch {
+  background-color: rgba(255, 214, 10, 0.35) !important;
+}
+
+.cm-searchMatch-selected {
+  background-color: rgba(255, 149, 0, 0.45) !important;
 }
 
 .image-workspace {

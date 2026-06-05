@@ -1,90 +1,13 @@
 import React from "react";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { json } from "@codemirror/lang-json";
+import { xml } from "@codemirror/lang-xml";
+import { bracketMatching, defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import { drawSelection, EditorView, highlightActiveLine, keymap, lineNumbers, placeholder } from "@codemirror/view";
 
 export type SyntaxKind = "json" | "xml" | "text";
-
-const MAX_HIGHLIGHT_CHARS = 120_000;
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-function escapeAttribute(value: string) {
-  return escapeHtml(value).replace(/\r/g, "&#13;").replace(/\n/g, "&#10;");
-}
-
-function renderSyntaxSegment(value: string, className?: string) {
-  if (!value) return "";
-  const classAttr = className ? ` class="${className}"` : "";
-  return `<span${classAttr} data-text="${escapeAttribute(value)}"></span>`;
-}
-
-function highlightJson(value: string) {
-  const tokenPattern = /"(?:\\.|[^"\\])*"(\s*:)?|\b(true|false|null)\b|-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/g;
-  let result = "";
-  let lastIndex = 0;
-
-  value.replace(tokenPattern, (match, colon: string | undefined, literal: string | undefined, offset: number) => {
-    result += renderSyntaxSegment(value.slice(lastIndex, offset));
-
-    if (match.startsWith('"')) {
-      const token = colon ? match.slice(0, -colon.length) : match;
-      result += renderSyntaxSegment(token, colon ? "token key" : "token string");
-      result += renderSyntaxSegment(colon ?? "");
-    } else if (literal) {
-      result += renderSyntaxSegment(match, "token literal");
-    } else {
-      result += renderSyntaxSegment(match, "token number");
-    }
-
-    lastIndex = offset + match.length;
-    return match;
-  });
-
-  result += renderSyntaxSegment(value.slice(lastIndex));
-  return result;
-}
-
-function highlightXml(value: string) {
-  const tokenPattern = /(<\/?)([\w:.-]+)|([\w:.-]+)(=)(".*?")|(<![\s\S]*?>|<\?[\s\S]*?\?>|\/?>)/g;
-  let result = "";
-  let lastIndex = 0;
-
-  value.replace(
-    tokenPattern,
-    (match, open: string | undefined, tag: string | undefined, attr: string | undefined, equals: string | undefined, attrValue: string | undefined, metaOrClose: string | undefined, offset: number) => {
-      result += renderSyntaxSegment(value.slice(lastIndex, offset));
-
-      if (open && tag) {
-        result += renderSyntaxSegment(open, "token bracket");
-        result += renderSyntaxSegment(tag, "token tag");
-      } else if (attr && equals && attrValue) {
-        result += renderSyntaxSegment(attr, "token attr");
-        result += renderSyntaxSegment(equals);
-        result += renderSyntaxSegment(attrValue, "token string");
-      } else if (metaOrClose) {
-        result += renderSyntaxSegment(metaOrClose, "token bracket");
-      } else {
-        result += renderSyntaxSegment(match);
-      }
-
-      lastIndex = offset + match.length;
-      return match;
-    },
-  );
-
-  result += renderSyntaxSegment(value.slice(lastIndex));
-  return result;
-}
-
-function highlightCode(value: string, syntax: SyntaxKind) {
-  if (syntax === "text") return renderSyntaxSegment(value);
-  return syntax === "json" ? highlightJson(value) : highlightXml(value);
-}
 
 interface CodeEditorProps {
   label: string;
@@ -97,48 +20,282 @@ interface CodeEditorProps {
   onChange?: (value: string) => void;
 }
 
-function CodeEditorBase({ label, value, syntax, placeholder, readOnly, error, actions, onChange }: CodeEditorProps) {
-  const highlightRef = React.useRef<HTMLPreElement>(null);
-  const disableHighlight = value.length > MAX_HIGHLIGHT_CHARS;
+const languageCompartment = new Compartment();
+const editableCompartment = new Compartment();
+const placeholderCompartment = new Compartment();
+const performanceCompartment = new Compartment();
+const LARGE_DOC_CHARS = 500_000;
+const HUGE_DOC_CHARS = 2_000_000;
+const LONG_LINE_CHARS = 20_000;
+const LARGE_DOC_SYNC_DELAY_MS = 350;
 
-  const highlightedHtml = React.useMemo(
-    () => (disableHighlight ? "" : error ? renderSyntaxSegment(value) : highlightCode(value, syntax)),
-    [value, syntax, error, disableHighlight],
-  );
+type PerfMode = "normal" | "large" | "huge";
 
-  const syncScroll = (event: React.UIEvent<HTMLTextAreaElement>) => {
-    if (!highlightRef.current) return;
-    highlightRef.current.scrollTop = event.currentTarget.scrollTop;
-    highlightRef.current.scrollLeft = event.currentTarget.scrollLeft;
+interface PerfProfile {
+  mode: PerfMode;
+  hasLongLine: boolean;
+}
+
+function languageExtension(syntax: SyntaxKind) {
+  if (syntax === "json") return json();
+  if (syntax === "xml") return xml();
+  return [];
+}
+
+function editableExtensions(readOnly?: boolean) {
+  return [EditorState.readOnly.of(Boolean(readOnly)), EditorView.editable.of(!readOnly)];
+}
+
+function hasVeryLongLine(value: string) {
+  let lineLength = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 10 || code === 13) {
+      lineLength = 0;
+    } else {
+      lineLength += 1;
+      if (lineLength > LONG_LINE_CHARS) return true;
+    }
+  }
+  return false;
+}
+
+function getPerfMode(length: number): PerfMode {
+  if (length > HUGE_DOC_CHARS) return "huge";
+  if (length > LARGE_DOC_CHARS) return "large";
+  return "normal";
+}
+
+function getPerfProfile(value: string): PerfProfile {
+  return {
+    mode: getPerfMode(value.length),
+    hasLongLine: hasVeryLongLine(value),
   };
+}
+
+function getPerfProfileFromState(state: EditorState, previous: PerfProfile): PerfProfile {
+  const mode = getPerfMode(state.doc.length);
+  if (mode !== "normal" || previous.hasLongLine) {
+    return { mode, hasLongLine: previous.hasLongLine };
+  }
+
+  for (const range of state.selection.ranges) {
+    const line = state.doc.lineAt(range.head);
+    if (line.length > LONG_LINE_CHARS) return { mode, hasLongLine: true };
+  }
+
+  return { mode, hasLongLine: false };
+}
+
+function samePerfProfile(left: PerfProfile, right: PerfProfile) {
+  return left.mode === right.mode && left.hasLongLine === right.hasLongLine;
+}
+
+function performanceExtensions(profile: PerfProfile, syntax: SyntaxKind): Extension[] {
+  const isLarge = profile.mode !== "normal";
+  const isHuge = profile.mode === "huge";
+  const disableWrapping = isLarge || profile.hasLongLine;
+  const extensions: Extension[] = [drawSelection(), keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap])];
+
+  if (!isHuge) {
+    extensions.push(lineNumbers());
+  }
+
+  if (!isLarge) {
+    extensions.push(bracketMatching(), highlightActiveLine(), highlightSelectionMatches());
+  }
+
+  if (!isHuge && syntax !== "text") {
+    extensions.push(syntaxHighlighting(defaultHighlightStyle, { fallback: true }));
+  }
+
+  if (!disableWrapping) {
+    extensions.push(EditorView.lineWrapping);
+  }
+
+  return extensions;
+}
+
+function CodeEditorBase({ label, value, syntax, placeholder: placeholderText, readOnly, error, actions, onChange }: CodeEditorProps) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const viewRef = React.useRef<EditorView | null>(null);
+  const onChangeRef = React.useRef(onChange);
+  const syncTimerRef = React.useRef<number | null>(null);
+  const perfFrameRef = React.useRef<number | null>(null);
+  const perfProfileRef = React.useRef<PerfProfile>(getPerfProfile(value));
+  const syntaxRef = React.useRef(syntax);
+
+  React.useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  const flushPendingChange = React.useCallback(() => {
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+
+    const view = viewRef.current;
+    if (!view) return;
+    onChangeRef.current?.(view.state.doc.toString());
+  }, []);
+
+  const scheduleChange = React.useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    if (view.state.doc.length <= LARGE_DOC_CHARS) {
+      flushPendingChange();
+      return;
+    }
+
+    if (syncTimerRef.current !== null) {
+      window.clearTimeout(syncTimerRef.current);
+    }
+
+    syncTimerRef.current = window.setTimeout(() => {
+      syncTimerRef.current = null;
+      onChangeRef.current?.(view.state.doc.toString());
+    }, LARGE_DOC_SYNC_DELAY_MS);
+  }, [flushPendingChange]);
+
+  const updatePerformanceProfile = React.useCallback((state: EditorState) => {
+    const nextProfile = getPerfProfileFromState(state, perfProfileRef.current);
+    if (samePerfProfile(nextProfile, perfProfileRef.current)) return;
+
+    perfProfileRef.current = nextProfile;
+    if (perfFrameRef.current !== null) return;
+
+    perfFrameRef.current = window.requestAnimationFrame(() => {
+      perfFrameRef.current = null;
+      viewRef.current?.dispatch({
+        effects: performanceCompartment.reconfigure(performanceExtensions(perfProfileRef.current, syntaxRef.current)),
+      });
+    });
+  }, []);
+
+  React.useEffect(() => {
+    if (!containerRef.current) return;
+
+    const view = new EditorView({
+      parent: containerRef.current,
+      state: EditorState.create({
+        doc: value,
+        extensions: [
+          history(),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) {
+              scheduleChange();
+              updatePerformanceProfile(update.state);
+            }
+          }),
+          EditorView.domEventHandlers({
+            blur: () => {
+              flushPendingChange();
+            },
+          }),
+          languageCompartment.of(languageExtension(syntax)),
+          editableCompartment.of(editableExtensions(readOnly)),
+          placeholderCompartment.of(placeholder(placeholderText)),
+          performanceCompartment.of(performanceExtensions(perfProfileRef.current, syntax)),
+          EditorView.theme({
+            "&": {
+              height: "100%",
+              backgroundColor: "transparent",
+              color: "var(--text-main)",
+              fontSize: "13px",
+            },
+            "&.cm-focused": {
+              outline: "none",
+            },
+            ".cm-scroller": {
+              fontFamily: 'ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
+              lineHeight: "1.5",
+              overflow: "auto",
+            },
+            ".cm-content": {
+              padding: "16px 16px 16px 0",
+              caretColor: "var(--text-main)",
+              minHeight: "100%",
+            },
+            ".cm-gutters": {
+              backgroundColor: "transparent",
+              color: "var(--text-muted)",
+              border: "none",
+              paddingTop: "16px",
+            },
+            ".cm-lineNumbers .cm-gutterElement": {
+              padding: "0 10px 0 12px",
+              minWidth: "34px",
+            },
+            ".cm-activeLine, .cm-activeLineGutter": {
+              backgroundColor: "rgba(150, 150, 150, 0.08)",
+            },
+            ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
+              backgroundColor: "rgba(0, 102, 204, 0.22)",
+            },
+            ".cm-placeholder": {
+              color: "var(--text-muted)",
+              opacity: "0.55",
+            },
+          }),
+        ],
+      }),
+    });
+
+    viewRef.current = view;
+    return () => {
+      if (syncTimerRef.current !== null) {
+        window.clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+      if (perfFrameRef.current !== null) {
+        window.cancelAnimationFrame(perfFrameRef.current);
+        perfFrameRef.current = null;
+      }
+      view.destroy();
+      viewRef.current = null;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const current = view.state.doc.toString();
+    if (current === value) return;
+    perfProfileRef.current = getPerfProfile(value);
+    view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
+    view.dispatch({ effects: performanceCompartment.reconfigure(performanceExtensions(perfProfileRef.current, syntaxRef.current)) });
+  }, [value]);
+
+  React.useEffect(() => {
+    syntaxRef.current = syntax;
+    viewRef.current?.dispatch({
+      effects: [
+        languageCompartment.reconfigure(languageExtension(syntax)),
+        performanceCompartment.reconfigure(performanceExtensions(perfProfileRef.current, syntax)),
+      ],
+    });
+  }, [syntax]);
+
+  React.useEffect(() => {
+    viewRef.current?.dispatch({ effects: editableCompartment.reconfigure(editableExtensions(readOnly)) });
+  }, [readOnly]);
+
+  React.useEffect(() => {
+    viewRef.current?.dispatch({ effects: placeholderCompartment.reconfigure(placeholder(placeholderText)) });
+  }, [placeholderText]);
 
   return (
     <div className="editor-container">
       <div className="editor-header output-header">
         <span>{label}</span>
-        {disableHighlight && <span className="editor-performance-note">大文本已关闭高亮</span>}
         {actions}
       </div>
-      <div className={`code-surface ${error ? "has-error" : ""}`}>
-        <pre
-          ref={highlightRef}
-          className="syntax-layer"
-          aria-hidden="true"
-          dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-        />
-        <textarea
-          value={value}
-          onChange={(event) => onChange?.(event.target.value)}
-          onScroll={syncScroll}
-          readOnly={readOnly}
-          wrap="soft"
-          spellCheck={false}
-          className={`editor-textarea ${error ? "error" : ""} ${disableHighlight ? "plain-text" : ""}`}
-          placeholder={placeholder}
-        />
-      </div>
+      <div className={`codemirror-surface ${error ? "has-error" : ""}`} ref={containerRef} />
     </div>
   );
 }
 
 export const CodeEditor = React.memo(CodeEditorBase);
+export default CodeEditor;
